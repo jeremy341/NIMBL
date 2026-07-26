@@ -1,24 +1,7 @@
-# --- IDE / OS ---
-.idea/
-.DS_Store
-.vscode/
-Thumbs.db
-*.swp
-*.swo
-*~
-
-# --- Python ---
-.venv/
-__pycache__/
-*.pyc
-*.egg-info/
-.pytest_cache/
-
-# --- Secrets / Environment ---
+node_modules/
+dist/
 .env
 .env.*
-*.key
-*.pem
-secrets.*
-credentials.*
-config.local.*
+*.log
+.DS_Store
+Thumbs.db

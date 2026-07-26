@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="ALL" />
+  </component>
+  <component name="BackgroundAgentGlobalSettings">
+    <option name="selectedModelId" value="auto" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="386bbc2e-3caf-485b-b119-6d2131502baf" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/LICENSE" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/__init__.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/ai/__init__.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/ai/auto_fixer.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/ai/check_codebase.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/ai/mira_assistant.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/mira_cli/__init__.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/mira_cli/api.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/mira_cli/context.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/mira_cli/main.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/mira_cli/models.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/mira_cli/modes/__init__.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/mira_cli/modes/build.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/mira_cli/modes/plan.py" beforeDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="CopilotPersistence">
+    <persistenceIdMap>
+      <entry key="_C:/Users/jerem/Documents/GITHUB/NIMBL" value="3Gwxt8LTjSGvaLFluVTcrpcy9Jq" />
+      <entry key="_C:/Users/jerem/Documents/Jugend Forscht/MIRA-DevTools" value="3Gd68zNWj7WwJeBZwANiL46jy83" />
+    </persistenceIdMap>
+  </component>
+  <component name="EmbeddingIndexingInfo">
+    <option name="cachedIndexableFilesCount" value="12" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;jeremy341&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/jeremy341/MIRA-DevTools.git&quot;,
+    &quot;accountId&quot;: &quot;db3623a2-f204-41d9-9992-f0ae83df7a1c&quot;
+  }
+}</component>
+  <component name="McpProjectServerCommands">
+    <commands />
+    <urls />
+  </component>
+  <component name="NextEditCompletionFeaturesState">
+    <decayedCancelled>
+      <entry key="MS100" value="1.1294782629633622" />
+      <entry key="MS500" value="2.2124163937614005" />
+      <entry key="S2" value="3.315359467914363" />
+      <entry key="S5" value="3.6965253283579678" />
+      <entry key="S10" value="3.842745342163514" />
+      <entry key="S30" value="3.9462958948009006" />
+      <entry key="S60" value="3.9729833111967587" />
+      <entry key="M2" value="3.9864501977084252" />
+      <entry key="M5" value="3.994570090669348" />
+      <entry key="M10" value="3.9972833773776895" />
+      <entry key="M15" value="3.998188547355666" />
+      <entry key="M30" value="3.9990940881699757" />
+      <entry key="H1" value="3.9995469976968083" />
+      <entry key="H2" value="3.9997734872499566" />
+      <entry key="H4" value="3.9998867407251915" />
+      <entry key="D1" value="3.9999811230514353" />
+      <entry key="W1" value="3.9999973032831986" />
+    </decayedCancelled>
+    <decayedSelected>
+      <entry key="MS100" value="0.0" />
+      <entry key="MS500" value="0.0" />
+      <entry key="S2" value="0.0" />
+      <entry key="S5" value="0.0" />
+      <entry key="S10" value="0.0" />
+      <entry key="S30" value="0.0" />
+      <entry key="S60" value="0.0" />
+      <entry key="M2" value="0.0" />
+      <entry key="M5" value="0.0" />
+      <entry key="M10" value="0.0" />
+      <entry key="M15" value="0.0" />
+      <entry key="M30" value="0.0" />
+      <entry key="H1" value="0.0" />
+      <entry key="H2" value="0.0" />
+      <entry key="H4" value="0.0" />
+      <entry key="D1" value="0.0" />
+      <entry key="W1" value="0.0" />
+    </decayedSelected>
+    <decayedShown>
+      <entry key="MS100" value="1.0612271099573576" />
+      <entry key="MS500" value="2.159122389126859" />
+      <entry key="S2" value="3.27366190493461" />
+      <entry key="S5" value="3.67472141113044" />
+      <entry key="S10" value="3.8308001399465317" />
+      <entry key="S30" value="3.9420618244922485" />
+      <entry key="S60" value="3.970833369307656" />
+      <entry key="M2" value="3.985366894449455" />
+      <entry key="M5" value="3.994134755948769" />
+      <entry key="M10" value="3.9970653733035255" />
+      <entry key="M15" value="3.9980431363959372" />
+      <entry key="M30" value="3.999021345213703" />
+      <entry key="H1" value="3.9995106168455807" />
+      <entry key="H2" value="3.999755294480572" />
+      <entry key="H4" value="3.9998776437544934" />
+      <entry key="D1" value="3.999979606808258" />
+      <entry key="W1" value="3.9999970866750374" />
+    </decayedShown>
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 1,
+  &quot;fromUser&quot;: false
+}</component>
+  <component name="ProjectId" id="3Gd68zNWj7WwJeBZwANiL46jy83" />
+  <component name="ProjectSessionTemplates">
+    <option name="panelTemplate">
+      <template>
+        <option name="modeId" value="Agent" />
+        <option name="model">
+          <model>
+            <option name="modelType" value="builtin_id" />
+            <option name="modelValue" value="auto" />
+          </model>
+        </option>
+        <option name="targetType" value="BACKGROUND" />
+        <option name="worktreeMode" value="WORKSPACE" />
+      </template>
+    </option>
+  </component>
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.MCP Project settings loaded&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
+    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
+    &quot;com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1&quot;: &quot;true&quot;,
+    &quot;copilot.chat.legacySessionMetadata.migrated&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;ignore.virus.scanning.warn.message&quot;: &quot;true&quot;,
+    &quot;junie.onboarding.icon.badge.shown&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/jerem/Documents/GITHUB/NIMBL&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.pluginManager&quot;,
+    &quot;to.speed.mode.migration.done&quot;: &quot;true&quot;,
+    &quot;ts.external.directory.path&quot;: &quot;C:\\Program Files\\JetBrains\\PyCharm 2026.1.2\\plugins\\javascript-plugin\\jsLanguageServicesImpl\\external&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  }
+}</component>
+  <component name="RecentsManager">
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\jerem\Documents\Jugend Forscht\MIRA-DevTools" />
+    </key>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-js-predefined-d6986cc7102b-31caf2ab9e3c-JavaScript-PY-261.26222.68" />
+        <option value="bundled-python-sdk-50341a9f1f9c-c2ffad84badb-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-261.26222.68" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="386bbc2e-3caf-485b-b119-6d2131502baf" name="Changes" comment="" />
+      <created>1784288943717</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1784288943717</updated>
+      <workItem from="1784288944699" duration="256000" />
+      <workItem from="1784295888689" duration="6153000" />
+      <workItem from="1784380014556" duration="6520000" />
+      <workItem from="1784467159261" duration="1194000" />
+      <workItem from="1784473419859" duration="3000" />
+      <workItem from="1784479464035" duration="6084000" />
+      <workItem from="1784493358924" duration="649000" />
+      <workItem from="1784534325308" duration="6000" />
+      <workItem from="1784569966469" duration="1632000" />
+      <workItem from="1784635173071" duration="2510000" />
+      <workItem from="1784650798278" duration="303000" />
+      <workItem from="1784710010599" duration="1787000" />
+      <workItem from="1784753873229" duration="208000" />
+      <workItem from="1784896645460" duration="4248000" />
+      <workItem from="1784905365212" duration="10070000" />
+      <workItem from="1784975392919" duration="10289000" />
+      <workItem from="1785004264863" duration="6368000" />
+      <workItem from="1785058523962" duration="4249000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+    <option name="exactExcludedFiles">
+      <list>
+        <option value="$PROJECT_DIR$/packages/core/src/util/which.d.ts" />
+      </list>
+    </option>
+  </component>
+</project>
