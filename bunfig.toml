@@ -1,0 +1,3 @@
+[run]
+preload = ["@opentui/solid/preload"]
+conditions = ["browser"]

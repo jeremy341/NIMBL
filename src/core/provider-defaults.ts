@@ -7,7 +7,7 @@ export const DEFAULTS = {
   },
   fallback: {
     provider: "openrouter",
-    model: "deepseek/deepseek-chat",
+    model: "deepseek/deepseek-v4-pro",
     baseURL: "https://openrouter.ai/api/v1",
     apiKey: "", // Set via OPENROUTER_KEY env var
   },

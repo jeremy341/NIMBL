@@ -105,16 +105,16 @@ bun run build
 
 ## Key Files & Their Responsibilities
 
-### `src/index.ts` — CLI Entry Point
+### `src/index.ts` — CLI Entry Point (REPL)
 
 **Responsibilities:**
 - Print NIMBL ASCII logo (ANSI Shadow font, green accent)
 - Parse CLI arguments
 - Initialize readline REPL
 - Capture user input
+- Handle slash commands (`/help`, `/model`, `/provider`, `/stats`, `/status`, `/export`, `/clear`, `/quit`)
 - Call `sendChat()` with config
 - Display token count and cost savings
-- Handle `/quit` command and Ctrl+C
 
 **Design:**
 - Green ANSI codes for prompts and stats (`\x1b[32m...\x1b[0m`)
@@ -125,6 +125,31 @@ bun run build
 - Keep branding and UX (logo, colors, prompts)
 - Don't hardcode API calls — delegate to `api.ts`
 - Don't store secrets — use `config.ts`
+
+### `src/tui.tsx` — Ink TUI Entry (Legacy)
+- React/Ink-based TUI using components in `src/tui/` (app.tsx, chat.tsx, home.tsx, theme.ts)
+- Same command set: `/help`, `/model`, `/provider`, `/stats`, `/status`, `/export`, `/clear`, `/quit`
+- Maintained as fallback; OpenTUI TUI is the active development target
+
+### `src/tui-opencode.tsx` — OpenTUI TUI (Primary)
+
+**Responsibilities:**
+- Full TUI with home screen (logo + input) and chat view (message list + prompt)
+- OpenCode-inspired session layout with left-border message cards
+- Slash autocomplete dropdown (Arrow Up/Down, Enter, Escape, mouse support)
+- Status bar showing provider, model, token count, and cost savings
+- Handle slash commands: `/quit`, `/clear`, `/help`, `/model`, `/provider`, `/stats`, `/status`, `/export`
+- Provider/model switching at runtime (reactive signals)
+- Conversation export to timestamped markdown file
+- Animated loading spinner (10-frame braille sequence)
+- Global error handler (writes to `nimbl-error.log`)
+
+**Design:**
+- All 6-digit hex colors (no RGBA — crashes Bun FFI)
+- `customBorderChars` spread from `EmptyBorder` for all 12 properties
+- `scrollbox` JSX component (registered in catalogue, not a named export)
+- No `opentui-spinner` — custom `LoadingDots` via `setInterval`
+- Commands stored as `SLASH_COMMANDS` array dispatched via `CMD_MAP`
 
 ### `src/config.ts` — Configuration Resolution
 

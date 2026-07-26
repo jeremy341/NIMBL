@@ -24,7 +24,7 @@ describe("resolveConfig", () => {
     process.env.OPENROUTER_KEY = "test-key"
     const config = resolveConfig(["--provider", "openrouter"])
     expect(config.provider).toBe("openrouter")
-    expect(config.model).toBe("deepseek/deepseek-chat")
+    expect(config.model).toBe("deepseek/deepseek-v4-pro")
     expect(config.apiKey).toBe("test-key")
   })
 

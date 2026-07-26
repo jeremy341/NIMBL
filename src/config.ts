@@ -19,8 +19,8 @@ export function resolveConfig(argv: string[]): ResolvedConfig {
   const apiKey =
     argApiKey ||
     (provider === "openrouter"
-      ? process.env.OPENROUTER_KEY || ""
-      : process.env.FREELLMAPI_KEY || "")
+      ? process.env.OPENROUTER_KEY || active.apiKey
+      : process.env.FREELLMAPI_KEY || active.apiKey)
 
   if (!apiKey) {
     throw new Error(
