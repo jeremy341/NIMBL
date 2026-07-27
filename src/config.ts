@@ -1,4 +1,4 @@
-import { DEFAULTS } from "@/core/provider-defaults"
+import { defaultModelFor, getProvider, providerApiKey } from "@/core/providers"
 
 export interface ResolvedConfig {
   provider: string
@@ -11,21 +11,15 @@ export function resolveConfig(argv: string[]): ResolvedConfig {
   const argModel = getFlag(argv, "--model")
   const argApiKey = getFlag(argv, "--api-key")
 
-  const active = argProvider === "openrouter" ? DEFAULTS.fallback : DEFAULTS.primary
-
-  const provider = argProvider || active.provider
-  const model = argModel || active.model
-  
-  const apiKey =
-    argApiKey ||
-    (provider === "openrouter"
-      ? process.env.OPENROUTER_KEY || active.apiKey
-      : process.env.FREELLMAPI_KEY || active.apiKey)
+  const provider = argProvider || process.env.NIMBL_PROVIDER || "freellmapi"
+  const definition = getProvider(provider)
+  const model = argModel || process.env.NIMBL_MODEL || defaultModelFor(provider)
+  const apiKey = argApiKey || providerApiKey(provider)
 
   if (!apiKey) {
     throw new Error(
       `No API key found for provider "${provider}". ` +
-      `Set ${provider === "openrouter" ? "OPENROUTER_KEY" : "FREELLMAPI_KEY"} environment variable.`
+      `Set ${definition.envKey} or pass --api-key.`
     )
   }
 

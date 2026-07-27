@@ -13,11 +13,10 @@ interface AppProps {
 }
 
 function getApiKey(provider: string): string {
-  const key = provider === "openrouter"
-    ? (process.env.OPENROUTER_KEY || DEFAULTS.fallback.apiKey)
-    : (process.env.FREELLMAPI_KEY || DEFAULTS.primary.apiKey)
-  if (!key) throw new Error(`No API key for ${provider}. Set ${provider === "openrouter" ? "OPENROUTER_KEY" : "FREELLMAPI_KEY"} env var.`)
-  return key
+  if (provider === "openrouter") {
+    return process.env.OPENROUTER_KEY || DEFAULTS.fallback.apiKey
+  }
+  return process.env.FREELLMAPI_KEY || DEFAULTS.primary.apiKey
 }
 
 function providerLabel(p: string): string {
@@ -141,7 +140,7 @@ export function App({ config }: AppProps) {
       })
       addMsg({ id: id(), role: "nimb", content: result.text })
       setTotalTokens(prev => prev + result.usage.totalTokens)
-      setTotalSaved(prev => prev + parseFloat(estimateSavings(result.usage.inputTokens, result.usage.outputTokens)))
+      setTotalSaved(prev => prev + estimateSavings(result.usage.inputTokens, result.usage.outputTokens))
     } catch (err: any) {
       addMsg({ id: id(), role: "err", content: err.message || String(err) })
     } finally {

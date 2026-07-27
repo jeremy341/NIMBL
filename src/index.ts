@@ -32,11 +32,10 @@ let totalTokens = 0
 let totalSaved = 0
 
 function getApiKey(provider: string): string {
-  const key = provider === "openrouter"
-    ? (process.env.OPENROUTER_KEY || DEFAULTS.fallback.apiKey)
-    : (process.env.FREELLMAPI_KEY || DEFAULTS.primary.apiKey)
-  if (!key) throw new Error(`No API key for ${provider}. Set ${provider === "openrouter" ? "OPENROUTER_KEY" : "FREELLMAPI_KEY"} env var.`)
-  return key
+  if (provider === "openrouter") {
+    return process.env.OPENROUTER_KEY || DEFAULTS.fallback.apiKey
+  }
+  return process.env.FREELLMAPI_KEY || DEFAULTS.primary.apiKey
 }
 
 function providerLabel(p: string): string {
@@ -137,8 +136,8 @@ rl.on("line", async (input) => {
     const result = await sendChat(text, { provider: p, model: currentModel, apiKey: getApiKey(p) })
     console.log(result.text)
     totalTokens += result.usage.totalTokens
-    totalSaved += parseFloat(estimateSavings(result.usage.inputTokens, result.usage.outputTokens))
-    console.log(`\n\x1b[32m⚡ ${result.usage.totalTokens} tokens · ~$${estimateSavings(result.usage.inputTokens, result.usage.outputTokens)} (vs GPT-4o)\x1b[0m`)
+    totalSaved += estimateSavings(result.usage.inputTokens, result.usage.outputTokens)
+    console.log(`\n\x1b[32m⚡ ${result.usage.totalTokens} tokens · ~$${estimateSavings(result.usage.inputTokens, result.usage.outputTokens).toFixed(4)} (vs GPT-4o)\x1b[0m`)
   } catch (err) {
     console.error(`\x1b[31mError: ${err instanceof Error ? err.message : err}\x1b[0m`)
   }

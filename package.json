@@ -3,15 +3,22 @@
   "displayName": "NIMBL",
   "private": true,
   "type": "module",
+  "bin": {
+    "nimbl": "./bin/nimbl.ts"
+  },
   "scripts": {
-    "dev": "bun run src/index.ts",
+    "dev": "bun run nimbl",
+    "repl": "bun run src/index.ts",
     "build": "bun run build.ts",
+    "postinstall": "bun run scripts/patch-opentui.mjs",
+    "prepare": "bun run build",
     "tui": "bun run src/tui.tsx",
     "nimbl": "bun run build && bun dist/nimbl.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.21",
     "@ai-sdk/openai": "^4.0.20",
     "@opentui/core": "0.4.5",
     "@opentui/keymap": "0.4.5",

@@ -8,21 +8,16 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="386bbc2e-3caf-485b-b119-6d2131502baf" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/LICENSE" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/__init__.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/ai/__init__.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/ai/auto_fixer.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/ai/check_codebase.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/ai/mira_assistant.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/mira_cli/__init__.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/mira_cli/api.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/mira_cli/context.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/mira_cli/main.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/mira_cli/models.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/mira_cli/modes/__init__.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/mira_cli/modes/build.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/mira_cli/modes/plan.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/bun.lock" beforeDir="false" afterPath="$PROJECT_DIR$/bun.lock" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/package.json" beforeDir="false" afterPath="$PROJECT_DIR$/package.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/config.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/config.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/core/api.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/core/api.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/core/provider-defaults.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/core/provider-defaults.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/index.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/index.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/tui-opencode.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/src/tui-opencode.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/tui/app.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/src/tui/app.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/config.test.ts" beforeDir="false" afterPath="$PROJECT_DIR$/tests/config.test.ts" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -36,7 +31,7 @@
     </persistenceIdMap>
   </component>
   <component name="EmbeddingIndexingInfo">
-    <option name="cachedIndexableFilesCount" value="12" />
+    <option name="cachedIndexableFilesCount" value="51" />
   </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -59,23 +54,23 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.1294782629633622" />
-      <entry key="MS500" value="2.2124163937614005" />
-      <entry key="S2" value="3.315359467914363" />
-      <entry key="S5" value="3.6965253283579678" />
-      <entry key="S10" value="3.842745342163514" />
-      <entry key="S30" value="3.9462958948009006" />
-      <entry key="S60" value="3.9729833111967587" />
-      <entry key="M2" value="3.9864501977084252" />
-      <entry key="M5" value="3.994570090669348" />
-      <entry key="M10" value="3.9972833773776895" />
-      <entry key="M15" value="3.998188547355666" />
-      <entry key="M30" value="3.9990940881699757" />
-      <entry key="H1" value="3.9995469976968083" />
-      <entry key="H2" value="3.9997734872499566" />
-      <entry key="H4" value="3.9998867407251915" />
-      <entry key="D1" value="3.9999811230514353" />
-      <entry key="W1" value="3.9999973032831986" />
+      <entry key="MS100" value="1.0014691570726824" />
+      <entry key="MS500" value="1.9671653887388605" />
+      <entry key="S2" value="4.760527220430573" />
+      <entry key="S5" value="5.972743776225036" />
+      <entry key="S10" value="6.46144497229756" />
+      <entry key="S30" value="6.81462837765433" />
+      <entry key="S60" value="6.906561964262609" />
+      <entry key="M2" value="6.953172084631659" />
+      <entry key="M5" value="7.119396925569304" />
+      <entry key="M10" value="9.232083828692353" />
+      <entry key="M15" value="13.556454395673633" />
+      <entry key="M30" value="30.0350568594291" />
+      <entry key="H1" value="54.73215327352798" />
+      <entry key="H2" value="77.7555771759022" />
+      <entry key="H4" value="93.79468431164311" />
+      <entry key="D1" value="110.2967174631101" />
+      <entry key="W1" value="113.46205101972365" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
@@ -97,23 +92,23 @@
       <entry key="W1" value="0.0" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="1.0612271099573576" />
-      <entry key="MS500" value="2.159122389126859" />
-      <entry key="S2" value="3.27366190493461" />
-      <entry key="S5" value="3.67472141113044" />
-      <entry key="S10" value="3.8308001399465317" />
-      <entry key="S30" value="3.9420618244922485" />
-      <entry key="S60" value="3.970833369307656" />
-      <entry key="M2" value="3.985366894449455" />
-      <entry key="M5" value="3.994134755948769" />
-      <entry key="M10" value="3.9970653733035255" />
-      <entry key="M15" value="3.9980431363959372" />
-      <entry key="M30" value="3.999021345213703" />
-      <entry key="H1" value="3.9995106168455807" />
-      <entry key="H2" value="3.999755294480572" />
-      <entry key="H4" value="3.9998776437544934" />
-      <entry key="D1" value="3.999979606808258" />
-      <entry key="W1" value="3.9999970866750374" />
+      <entry key="MS100" value="0.006507644168194811" />
+      <entry key="MS500" value="1.302492156357425" />
+      <entry key="S2" value="4.517050376365627" />
+      <entry key="S5" value="5.866570142321819" />
+      <entry key="S10" value="6.406761609964447" />
+      <entry key="S30" value="6.7960323799120514" />
+      <entry key="S60" value="6.897217069934816" />
+      <entry key="M2" value="6.948487844056204" />
+      <entry key="M5" value="7.1175112007798464" />
+      <entry key="M10" value="9.23100286663466" />
+      <entry key="M15" value="13.555477560614825" />
+      <entry key="M30" value="30.033974522414006" />
+      <entry key="H1" value="54.731121040244155" />
+      <entry key="H2" value="77.75482294266965" />
+      <entry key="H4" value="93.79422280986574" />
+      <entry key="D1" value="110.29662593263448" />
+      <entry key="W1" value="113.46203754154187" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -203,7 +198,8 @@
       <workItem from="1784905365212" duration="10070000" />
       <workItem from="1784975392919" duration="10289000" />
       <workItem from="1785004264863" duration="6368000" />
-      <workItem from="1785058523962" duration="4249000" />
+      <workItem from="1785058523962" duration="9909000" />
+      <workItem from="1785153629547" duration="7592000" />
     </task>
     <servers />
   </component>
@@ -212,6 +208,7 @@
     <option name="exactExcludedFiles">
       <list>
         <option value="$PROJECT_DIR$/packages/core/src/util/which.d.ts" />
+        <option value="$PROJECT_DIR$/src/tui-opencode.d.ts" />
       </list>
     </option>
   </component>

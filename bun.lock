@@ -5,6 +5,7 @@
     "": {
       "name": "nimbl",
       "dependencies": {
+        "@ai-sdk/anthropic": "^4.0.21",
         "@ai-sdk/openai": "^4.0.20",
         "@opentui/core": "0.4.5",
         "@opentui/keymap": "0.4.5",
@@ -25,6 +26,8 @@
     },
   },
   "packages": {
+    "@ai-sdk/anthropic": ["@ai-sdk/anthropic@4.0.21", "", { "dependencies": { "@ai-sdk/provider": "4.0.3", "@ai-sdk/provider-utils": "5.0.12" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-rvWzefSJiDLBswGFn0oWM7D8p8eo2tKey2anSM2IxaFd/4tLfolWAWP6Zp+82YUURZUoX6f01NI/txF6ekbC4Q=="],
+
     "@ai-sdk/gateway": ["@ai-sdk/gateway@4.0.28", "", { "dependencies": { "@ai-sdk/provider": "4.0.3", "@ai-sdk/provider-utils": "5.0.12", "@vercel/oidc": "3.2.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, ""],
 
     "@ai-sdk/openai": ["@ai-sdk/openai@4.0.20", "", { "dependencies": { "@ai-sdk/provider": "4.0.3", "@ai-sdk/provider-utils": "5.0.12" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, ""],

@@ -48,10 +48,10 @@ describe("resolveConfig", () => {
     expect(config.provider).toBe("freellmapi")
   })
 
-  it("throws error when API key is missing", () => {
+  it("fails fast when a hosted provider key is missing", () => {
     process.env.FREELLMAPI_KEY = ""
     process.env.OPENROUTER_KEY = ""
-    expect(() => resolveConfig([])).toThrow("No API key found")
+    expect(() => resolveConfig(["--provider", "openrouter"])).toThrow("OPENROUTER_KEY")
   })
 
   it("prioritizes --api-key flag over environment variable", () => {

@@ -3,12 +3,12 @@ export const DEFAULTS = {
     provider: "freellmapi",
     model: "auto",
     baseURL: "http://localhost:3001/v1",
-    apiKey: "", // Set via FREELLMAPI_KEY env var
+    apiKey: "",
   },
   fallback: {
     provider: "openrouter",
     model: "deepseek/deepseek-v4-pro",
     baseURL: "https://openrouter.ai/api/v1",
-    apiKey: "", // Set via OPENROUTER_KEY env var
+    apiKey: "",
   },
 } as const

@@ -6,3 +6,12 @@ dist/
 .DS_Store
 Thumbs.db
 .idea/
+.nimbl/
+nimbl-export-*.md
+nimbl-share-*.md
+renderer-check.txt
+# Stale compiled outputs
+src/core/*.js
+src/core/*.d.ts
+src/*.d.ts
+tests/*.js

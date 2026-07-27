@@ -158,12 +158,23 @@ NIMBL/
 ├── src/
 │   ├── index.ts              # REPL entry (readline-based, legacy)
 │   ├── config.ts             # Config resolution (.env, CLI args, defaults)
-│   ├── tui.tsx               # Ink TUI entry point (React)
+│   ├── tui.tsx               # Ink TUI entry point (React) — legacy fallback
 │   ├── tui-opencode.tsx      # OpenTUI TUI entry point (SolidJS) — CURRENT PRIMARY
 │   ├── core/
+│   │   ├── agent.ts          # Agent system (tool use, build/plan/explain/learn modes)
 │   │   ├── api.ts            # AI SDK wrapper + cost estimation
-│   │   ├── types.ts          # Type definitions (Message, ChatRequest, etc.)
-│   │   └── provider-defaults.ts # Provider config defaults
+│   │   ├── commands.ts       # Project-local command loader (.nimbl/commands/*.md)
+│   │   ├── context.ts        # Semantic context selection (file excerpting + cache)
+│   │   ├── learning.ts       # Learning state tracker (concepts, confidence, Socratic)
+│   │   ├── permissions.ts    # Wildcard-based permission policy engine
+│   │   ├── prompt-context.ts # @file and !`command` expansion in prompts
+│   │   ├── providers.ts      # 15 provider definitions (OpenAI-compatible + Anthropic)
+│   │   ├── provider-defaults.ts # Legacy provider config defaults
+│   │   ├── routing.ts        # Automatic provider routing (local/fast/budget)
+│   │   ├── session-actions.ts # Session rename, fork, undo/redo snapshots, compact
+│   │   ├── sessions.ts       # Session persistence (.nimbl/sessions.json)
+│   │   ├── settings.ts       # Settings persistence (.nimbl/settings.json)
+│   │   └── types.ts          # Type definitions (Message, ChatRequest, etc.)
 │   └── tui/                  # Ink/React TUI components (legacy)
 │       ├── app.tsx           # App shell with view routing (home/chat)
 │       ├── home.tsx          # Home screen (logo + prompt)
@@ -173,12 +184,20 @@ NIMBL/
 │   └── nimbl.js              # Bundled OpenTUI TUI output
 ├── build.ts                  # Bun.build() with Solid transform plugin
 ├── tests/
+│   ├── api.test.ts           # API + cost calculation tests
+│   ├── commands.test.ts      # Project command loading + argument expansion
 │   ├── config.test.ts        # Config resolution tests
-│   └── api.test.ts           # API + cost calculation tests
+│   ├── context.test.ts       # Context compression + budget + caching
+│   ├── learning.test.ts      # Learning state tracking
+│   ├── permissions.test.ts   # Wildcard permission matching
+│   ├── prompt-context.test.ts # @file and !`command` expansion
+│   ├── providers.test.ts     # Model context window resolution
+│   ├── session-actions.test.ts # Session rename, fork, snapshots, compact
+│   └── settings.test.ts      # Provider routing preferences
 ├── docs/
 │   ├── RESEARCH_REPORT.md    # This file
 │   └── LOGO_DESIGN.md        # Branding guidelines
-├── package.json, tsconfig.json, vitest.config.ts, AGENTS.md
+├── package.json, tsconfig.json, vitest.config.ts, AGENTS.md, bunfig.toml
 ```
 
 ### 5.2 Three Parallel Interfaces
@@ -311,9 +330,25 @@ Switched to OpenTUI (opencode's TUI framework) for:
 
 5. **`opentui-spinner` package doesn't exist** — Animated spinner uses a custom `LoadingDots` component with `setInterval` and spinner frame characters.
 
-### 6.4 Why Both TUIs Exist
+### 6.4 Phase 4: Full Agent Backend
 
-The Ink TUI (`src/tui/`) remains as a stable fallback and reference. The OpenTUI TUI (`src/tui-opencode.tsx`) is the active development target. Both call the same `core/api.ts` and `config.ts`.
+**Stack:** Vercel AI SDK v7 + tool.use + zod + file system
+
+The backend expanded from a simple sendChat wrapper to a full agent system with:
+- **Tool-based execution:** `read`, `glob`, `grep`, `write`, `edit`, `apply_patch`, `bash`, `webfetch`, `skill`, `question`, `todowrite` — 11 tools with typed schemas and permission checks
+- **Agent modes:** Build (full access), Plan (read-only investigation), Explain (read-only teaching), Learn (Socratic hints)
+- **Permission engine:** Wildcard-based policy (`*: ask`, `bash: deny`, etc.) with in-TUI approval dialogs
+- **Session management:** Persistent sessions with undo/redo file snapshots, fork, pin, compact
+- **Context selection:** Keyword-based file excerpting with LRU cache for relevant project context
+- **Learning state:** Tracks concept confidence across sessions, injects teaching focus into system prompt
+- **Provider routing:** Automatic choice of local/fast/cheap provider based on prompt keywords
+- **Project commands:** `.nimbl/commands/*.md` loaded at startup as slash-accessible prompts
+
+See `src/core/agent.ts` (421 lines, the largest backend module) for the full agent implementation.
+
+### 6.5 Why Both TUIs Exist
+
+The Ink TUI (`src/tui/`) remains as a stable fallback and reference. The OpenTUI TUI (`src/tui-opencode.tsx`) is the active development target (580 lines, fully featured). Both call the same `core/api.ts` and `config.ts`, while the agent system is used exclusively by the OpenTUI TUI's `send()` function.
 
 ---
 
@@ -324,29 +359,26 @@ The Ink TUI (`src/tui/`) remains as a stable fallback and reference. The OpenTUI
 Designed to match OpenCode's session layout pattern:
 
 ```
-┌────────────────────────────────────────────┐
-│  NIMBL  FreeLLM API / auto    ⚡847t · $0.03│  ← Status bar (green bg)
-├────────────────────────────────────────────┤
-│ ┃ User Hello, how do I reverse a string?   │  ← Message card (left border)
-│ ┃                                          │
-│ ┃ NIMBL                                    │
-│ ┃  Here's a function that reverses...      │
-│ ┃  function reverse(str: string) {         │
-│ ┃    return str.split('').reverse().join() │
-│ ┃  }                                       │
-│ ┃                                          │
-│ ┃ User                                     │
-│ ┃  Actually, do it without .reverse()      │
-│ ┃                                          │
-│ ┃ NIMBL                                    │
-│ ┃  ⠋ Thinking...                          │  ← Loading dots (animated)
-│ ┃                                          │
-│ └──────────────────────────────────────────┤
-│ ╹ /quit  ← autocomplete dropdown           │  ← Slash autocomplete
-│ ┃                                          │
-│ ┃ Type a message...                        │  ← Prompt (left border)
-│ ╹──────────────────────────────────────────│  ← Prompt bottom
-└────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  NIMBL  Build · FreeLLM API / auto   847t · $0.03    │  ← Status bar (green bg, agent mode, tokens)
+├──────────────────────────────────────────────────────┤
+│ ┃ You                                                │  ← Message card (left border)
+│ ┃  Hello, how do I reverse a string?                 │
+│ ┃                                                    │
+│ ┃ NIMBL                                              │
+│ ┃  Here's a function that reverses...                │
+│ ┃                                                    │
+│ ┃  Tool [completed]  13:42   actions                 │  ← Tool event cards
+│ ┃  Read src/utils.ts                                 │
+│ ┃                                                    │
+│ ┃ NIMBL                                              │
+│ ┃  ⠋ NIMBL is working…                             │  ← Loading spinner
+│ ┃                                                    │
+│ │                                                    │
+│ └────────────────────────────────────────────────────┤
+│ ╹ Build  Ask NIMBL to help...   FreeLLM API · auto   │  ← Prompt with agent mode + provider
+│ ╹────────────────────────────────────────────────────│
+└──────────────────────────────────────────────────────┘
 ```
 
 **Design decisions:**
@@ -366,7 +398,7 @@ A dropdown above the prompt input that filters commands while typing:
 - **Dismissal:** Escape hides the dropdown; clicking outside hides it.
 - **Exact match optimization:** If the user types `/quit` exactly and presses Enter, `/quit` executes immediately instead of filling the input.
 
-Current commands: `/quit` (exit), `/clear` (clear messages). Only two commands — no `/exit` alias (it was removed as a duplicate).
+Current commands: `/quit`, `/clear`, `/help`, `/model`, `/provider`, `/agent`, `/sessions`, `/timeline`, `/palette`, `/rename`, `/fork`, `/pin`, `/delete`, `/theme`, `/keybinds`, `/settings`, `/route`, `/init`, `/share`, `/unshare`, `/compact`, `/details`, `/thinking`, `/undo`, `/redo`, `/context`, `/status`, `/stats`, `/export`, `/new` — plus project-local commands from `.nimbl/commands/*.md`.
 
 ### 7.3 Color Palette
 
@@ -487,9 +519,23 @@ The `@/*` path alias works at runtime because Bun resolves it natively. However,
 
 ### 10.1 Current Tests
 
-**`tests/config.test.ts`:** Tests `resolveConfig()` behavior — default provider, provider/model flag overrides, API key resolution from env vars, error on missing key.
+| File | Covers | Assertions |
+|------|--------|-----------|
+| `tests/api.test.ts` | `estimateSavings()` — cost calculation accuracy, scaling, zero-token edge case | 6 |
+| `tests/commands.test.ts` | `loadProjectCommands()` + `expandCommand()` — markdown frontmatter, argument substitution | 3 |
+| `tests/config.test.ts` | `resolveConfig()` — default provider, overrides, API key resolution, missing key error | 7 |
+| `tests/context.test.ts` | `compressCode()` — structure preservation; `selectProjectContextWithBudget()` — budget capping, LRU cache | 3 |
+| `tests/learning.test.ts` | `observeLearning()` — concept tracking without storing text; `teachingPrompt()` — focus injection | 2 |
+| `tests/permissions.test.ts` | `permissionFor()` — wildcard matching, last-match-wins, global default, tool-specific rules | 4 |
+| `tests/prompt-context.test.ts` | `preparePromptContext()` — `@file` attachment, `!`command` expansion, cross-project safety | 4 |
+| `tests/providers.test.ts` | `modelContextWindow()` — per-model window resolution, `NIMBL_CONTEXT_WINDOW` override | 2 |
+| `tests/session-actions.test.ts` | `renameSession()`, `forkSession()`, `recordSnapshot()`, `compactSession()` | 4 |
+| `tests/settings.test.ts` | `routeProvider()` — local provider preference for privacy-sensitive prompts | 1 |
 
-**`tests/api.test.ts`:** Tests `estimateSavings()` — cost calculation accuracy, scaling with input/output tokens, output weight vs input, zero-token edge case.
+**Running:**
+```bash
+bun test      # All 38 tests across 12 files (~200ms)
+```
 
 ### 10.2 Running Tests
 
@@ -586,14 +632,31 @@ NIMBL's learning system (v0.2+) will track what the developer knows and doesn't 
 
 ### 13.1 Current Architecture
 
-NIMBL does **not** ship a custom multi-provider aggregation system. Instead, it uses the **Vercel AI SDK** (`ai` + `@ai-sdk/openai`) to connect to any OpenAI-compatible endpoint:
+NIMBL does **not** ship a custom multi-provider aggregation system. Instead, it uses the **Vercel AI SDK** (`ai` + `@ai-sdk/openai` + `@ai-sdk/anthropic`) to connect to any OpenAI-compatible endpoint, plus Anthropic's native protocol:
 
-| Provider | Base URL | Key Source | Default Model |
-|----------|----------|------------|---------------|
-| FreeLLMAPI | `http://localhost:3001/v1` | `FREELLMAPI_KEY` env / hardcoded | `auto` |
-| OpenRouter | `https://openrouter.ai/api/v1` | `OPENROUTER_KEY` env / hardcoded | `deepseek/deepseek-v4-pro` |
+| Provider | Base URL | Key Source | Default Model | Protocol |
+|----------|----------|------------|---------------|----------|
+| FreeLLMAPI | `http://localhost:3001/v1` | `FREELLMAPI_KEY` env or empty for local | `auto` | OpenAI |
+| OpenRouter | `https://openrouter.ai/api/v1` | `OPENROUTER_KEY` env | `deepseek/deepseek-v4-pro` | OpenAI |
+| OpenAI | `https://api.openai.com/v1` | `OPENAI_API_KEY` env | `gpt-4.1-mini` | OpenAI |
+| Anthropic | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` env | `claude-sonnet-4-5` | Anthropic |
+| Google | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` env | `gemini-2.5-flash` | OpenAI |
+| Groq | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` env | `llama-3.3-70b-versatile` | OpenAI |
+| Together | `https://api.together.xyz/v1` | `TOGETHER_API_KEY` env | `Llama-3.3-70B-Instruct-Turbo` | OpenAI |
+| Fireworks | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` env | `llama-v3p3-70b-instruct` | OpenAI |
+| DeepInfra | `https://api.deepinfra.com/v1/openai` | `DEEPINFRA_API_KEY` env | `Llama-3.1-70B-Instruct` | OpenAI |
+| Mistral | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` env | `mistral-large-latest` | OpenAI |
+| Perplexity | `https://api.perplexity.ai` | `PERPLEXITY_API_KEY` env | `sonar-pro` | OpenAI |
+| xAI | `https://api.x.ai/v1` | `XAI_API_KEY` env | `grok-3-mini` | OpenAI |
+| Cerebras | `https://api.cerebras.ai/v1` | `CEREBRAS_API_KEY` env | `llama-3.3-70b` | OpenAI |
+| NVIDIA | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` env | `llama-3.3-70b-instruct` | OpenAI |
+| Ollama | `http://localhost:11434/v1` | `OLLAMA_API_KEY` (local fallback) | `llama3.2` | OpenAI |
+| LM Studio | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` (local fallback) | `local-model` | OpenAI |
+| GitHub Models | `https://models.github.ai/inference` | `GITHUB_TOKEN` env | `openai/gpt-4.1` | OpenAI |
+| OpenCode Zen | `https://opencode.ai/zen/v1` | `OPENCODE_ZEN_API_KEY` env | `deepseek-v4-flash-free` | OpenAI |
+| OpenCode Go | `https://opencode.ai/zen/v1` | `OPENCODE_GO_API_KEY` env | `minimax-m2.5` | OpenAI |
 
-Provider selection is done via CLI flag: `--provider openrouter`. Default is FreeLLMAPI.
+Provider selection via CLI flag `--provider`, in-TUI picker, or automatic routing based on prompt keywords. Default is FreeLLMAPI. See `src/core/providers.ts` for the full definitions.
 
 ### 13.2 Default API Keys
 
@@ -682,13 +745,31 @@ Future versions may add client-side failover if FreeLLMAPI proves unreliable or 
 - [x] REPL mode (readline-based, green prompt)
 - [x] Ink TUI (home + chat screens, message bubbles)
 - [x] OpenTUI TUI (OpenCode session layout, left borders)
-- [x] Status bar (provider, model, token count + savings)
-- [x] Slash autocomplete (`/quit`, `/clear`)
-- [x] Loading spinner (animated dots)
-- [x] Token cost estimation
+- [x] Status bar (provider, model, agent mode, token count + savings)
+- [x] Slash autocomplete (30+ commands with filter + arrow navigation)
+- [x] Loading spinner (animated braille dots)
+- [x] Token cost estimation (vs GPT-4o baseline)
 - [x] Terminal restore on exit
-- [x] Multiple provider support (FreeLLMAPI, OpenRouter)
-- [x] CLI flags (`--provider`, `--model`, `--api-key`)
+- [x] Provider integration: FreeLLMAPI, OpenRouter, OpenAI, Anthropic, Google, Groq, Together, Fireworks, DeepInfra, Mistral, Perplexity, xAI, Cerebras, NVIDIA, Ollama, LM Studio, GitHub Models, OpenCode Zen, OpenCode Go — 15 total definitions
+- [x] CLI flags (`--provider`, `--model`, `--api-key`, `--session`)
+- [x] Agent system (Build / Plan / Explain / Learn modes with tool restrictions)
+- [x] Permission system (policy engine with wildcard rules + approval dialogs)
+- [x] Session management (new, fork, delete, pin, rename, persist, timeline)
+- [x] Undo/redo for file changes (snapshot-based)
+- [x] Provider routing (prefer local / fast / cheap based on prompt keywords)
+- [x] Learning state (tracks concept confidence, teaching prompt injection)
+- [x] Context selection (keyword-based file excerpting with LRU cache)
+- [x] Prompt expansion (`@file` attachment, `!`command` shell output)
+- [x] Project commands (`.nimbl/commands/*.md` with frontmatter + argument expansion)
+- [x] Theme system (nimbl / opencode / mono palettes)
+- [x] Settings persistence (`.nimbl/settings.json` for MCP, plugins, LSP, permissions)
+- [x] Inspector panel (session stats sidebar at 148+ cols)
+- [x] Dynamic context bar (token usage % in header)
+- [x] Message actions (copy, fork, revert, resend)
+- [x] Keyboard shortcuts (Ctrl+P palette, Ctrl+M latest message, Tab mode switch)
+- [x] Session compact (summarize old context to save tokens)
+- [x] Session export to markdown
+- [x] Error handling (global handler writes to `nimbl-error.log`, graceful exit)
 
 ### 14.5 Upcoming Features (v0.2+)
 
@@ -755,15 +836,16 @@ Rendered in forest green (`#06402b`) on black (`#0a0a0a`).
 | Auto-scroll to bottom not working | New messages appear below viewport | In progress |
 | No streaming output | Full response rendered at once (increased latency perception) | Pending |
 | No markdown rendering | Raw text output (no syntax highlighting, links, etc.) | Pending |
-| No config file | All config via CLI flags or env vars | By design (v0.1) |
 | Error recovery limited | No retry mechanism for transient failures | Pending |
+| Compiled `.js`/`.d.ts` files in `src/` | Stale build artifacts from earlier `tsc` runs; can cause stale test runs | Cleanup needed |
 
 ### 16.2 Technical Debt
 
 - Two TUI codebases (Ink + OpenTUI) to maintain
-- `src/index.ts` (REPL) and `src/tui.tsx` (Ink) are legacy but untested
+- `src/index.ts` (REPL) and `src/tui.tsx` (Ink) are legacy but maintained
 - Patched `node_modules` makes `bun install` a two-step process (install → build)
-- No automated tests for TUI components
+- No automated tests for TUI components (OpenTUI test utilities pending)
+- Stale compiled `.js` files in source tree can cause confusing test failures
 
 ### 16.3 Future Work
 
@@ -788,6 +870,6 @@ Rendered in forest green (`#06402b`) on black (`#0a0a0a`).
 
 ---
 
-*Report compiled July 19, 2026. Updated July 26, 2026. NIMBL — Learn more. Use fewer tokens.*
+*Report compiled July 19, 2026. Updated July 27, 2026. NIMBL — Learn more. Use fewer tokens.*
 
 **Reference:** [opencode](https://github.com/anomalyco/opencode) — `C:\Users\jerem\Documents\GITHUB\opencode`
