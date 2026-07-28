@@ -17,18 +17,14 @@ This document helps AI coding assistants (opencode, Claude Code, GitHub Copilot,
 - **Type Safety:** Strict mode enabled
 
 ### Problem Statement
-Existing AI coding tools (Cursor, Claude Code) consume 100K-1M tokens per task. NIMBL uses 10-50x fewer tokens through:
-1. Intelligent context management (semantic search + graph traversal)
-2. AST compression techniques
-3. Prompt caching
-4. Pedagogical design (teach instead of generate)
+NIMBL aims to reduce unnecessary context while teaching developers. The current prerelease uses lexical project-context selection, bounded excerpts, limited conversation history, and pedagogical modes. Semantic retrieval, graph traversal, AST compression, provider prompt caching, and comparative token benchmarks are planned rather than implemented.
 
 ### Differentiator
 Every existing AI coding tool is a **code generator**. NIMBL is a **learning companion** that:
 - Explains code as it suggests changes
 - Asks questions (Socratic method) instead of just solving
-- Tracks skill progress over time
-- Works offline and with any provider
+- Records lightweight concept encounters over time
+- Can use supported local or hosted providers
 - Ships as a single CLI command
 
 ---
@@ -40,12 +36,14 @@ Every existing AI coding tool is a **code generator**. NIMBL is a **learning com
 ```
 NIMBL/
 ├── src/
-│   ├── index.ts              # Entry point, REPL loop, branding
+│   ├── tui-opencode.tsx      # Sole supported OpenTUI entry
+│   ├── tui-opencode-ui/      # TUI components
 │   ├── config.ts             # Config resolution (.env, CLI args, defaults)
 │   └── core/
-│       ├── api.ts            # AI SDK wrapper + cost estimation
-│       ├── types.ts          # Type definitions
-│       └── provider-defaults.ts # Provider config (FreeLLMAPI, OpenRouter)
+│       ├── agent.ts          # Streaming agent and tools
+│       ├── providers.ts      # Provider/model catalog
+│       ├── sessions.ts       # Durable session storage
+│       └── context.ts        # Local context selection
 ├── tests/
 │   ├── config.test.ts        # Configuration tests
 │   └── api.test.ts           # API and cost calculation tests
@@ -78,8 +76,8 @@ NIMBL/
 # Install dependencies
 bun install
 
-# Start NIMBL (requires FREELLMAPI_KEY or OPENROUTER_KEY env var)
-bun run src/index.ts
+# Start the supported OpenTUI application
+bun run nimbl
 
 # Type checking (strict mode)
 bun run typecheck
@@ -105,39 +103,13 @@ bun run build
 
 ## Key Files & Their Responsibilities
 
-### `src/index.ts` — CLI Entry Point (REPL)
-
-**Responsibilities:**
-- Print NIMBL ASCII logo (ANSI Shadow font, green accent)
-- Parse CLI arguments
-- Initialize readline REPL
-- Capture user input
-- Handle slash commands (`/help`, `/model`, `/provider`, `/stats`, `/status`, `/export`, `/clear`, `/quit`)
-- Call `sendChat()` with config
-- Display token count and cost savings
-
-**Design:**
-- Green ANSI codes for prompts and stats (`\x1b[32m...\x1b[0m`)
-- Streaming output support (future)
-- Error handling with colored error messages
-
-**Modifying this file:**
-- Keep branding and UX (logo, colors, prompts)
-- Don't hardcode API calls — delegate to `api.ts`
-- Don't store secrets — use `config.ts`
-
-### `src/tui.tsx` — Ink TUI Entry (Legacy)
-- React/Ink-based TUI using components in `src/tui/` (app.tsx, chat.tsx, home.tsx, theme.ts)
-- Same command set: `/help`, `/model`, `/provider`, `/stats`, `/status`, `/export`, `/clear`, `/quit`
-- Maintained as fallback; OpenTUI TUI is the active development target
-
-### `src/tui-opencode.tsx` — OpenTUI TUI (Primary)
+### `src/tui-opencode.tsx` — OpenTUI TUI
 
 **Responsibilities:**
 - Full TUI with home screen (logo + input) and chat view (message list + prompt)
 - OpenCode-inspired session layout with left-border message cards
 - Slash autocomplete dropdown (Arrow Up/Down, Enter, Escape, mouse support)
-- Status bar showing provider, model, token count, and cost savings
+- Status bar showing provider, model, token count, and GPT-4o reference cost
 - Handle slash commands: `/quit`, `/clear`, `/help`, `/model`, `/provider`, `/stats`, `/status`, `/export`
 - Provider/model switching at runtime (reactive signals)
 - Conversation export to timestamped markdown file
@@ -177,27 +149,23 @@ bun run build
 - Handle provider-specific base URLs
 - Map provider name to OpenAI-compatible endpoint
 - Return structured `ChatResult` with token counts
-- Calculate cost savings vs GPT-4o reference
+- Calculate hypothetical GPT-4o reference cost
 
 **Design:**
 - No provider SDK imports — only openai-compatible via Vercel SDK
 - Error messages include provider name for debugging
-- `estimateSavings()` uses GPT-4o as reference baseline
+- `estimateReferenceCost()` applies a GPT-4o reference baseline; it is not actual savings
 
 **Modifying this file:**
 - Always validate input (empty text, missing config)
 - Update `providerToBaseURL()` when adding providers
 - Keep `REF_COST` values accurate (currently GPT-4o pricing)
 
-### `src/core/provider-defaults.ts` — Provider Config
+### `src/core/providers.ts` — Provider Config
 
 **Responsibilities:**
-- Define hardcoded defaults for each provider
-- Store model IDs and API endpoints
-
-**Current Providers:**
-1. **FreeLLMAPI** — Auto-router, defaults to `http://localhost:3001/v1`
-2. **OpenRouter** — DeepSeek Chat, endpoints at `https://openrouter.ai/api/v1`
+- Define the supported provider catalog
+- Store model IDs, context windows, protocols, and API endpoints
 
 **Modifying this file:**
 - Never hardcode real API keys — use empty strings
@@ -327,33 +295,15 @@ nimbl  # Uses freellmapi by default
 
 ### Adding a New Provider
 
-1. Add entry to `provider-defaults.ts`:
+1. Add a `ProviderDefinition` entry to `providers.ts`:
    ```typescript
-   export const DEFAULTS = {
-     // ...
-     newprovider: {
-       provider: "newprovider",
-       model: "default-model",
-       baseURL: "https://api.newprovider.com/v1",
-       apiKey: "",
-     },
-   }
+   compatible("newprovider", "New Provider", "Description", "NEWPROVIDER_KEY",
+     "https://api.newprovider.com/v1",
+     [{ id: "default-model", name: "Default Model", contextWindow: 128_000 }])
    ```
 
-2. Add case in `api.ts` providerToBaseURL():
-   ```typescript
-   case "newprovider": return "https://api.newprovider.com/v1"
-   ```
-
-3. Add env var handling in `config.ts`:
-   ```typescript
-   provider === "newprovider"
-     ? process.env.NEWPROVIDER_KEY || ""
-     : ...
-   ```
-
-4. Update README with setup instructions
-5. Add tests for the new provider
+2. Update README with setup instructions.
+3. Add provider and configuration tests.
 
 ---
 
@@ -366,7 +316,7 @@ nimbl  # Uses freellmapi by default
 
 ### Integration Tests (Future)
 
-- End-to-end REPL interaction
+- End-to-end OpenTUI interaction
 - Provider connectivity
 - Error recovery
 
@@ -407,16 +357,13 @@ bun test --watch
 
 ### Token Usage
 
-NIMBL targets **5K-30K tokens per task**:
-- Prompt: ~2K-10K tokens (context window)
-- Response: ~3K-20K tokens (streaming)
-- Total: ~5K-30K (vs Cursor's 100K-500K)
+NIMBL records provider-reported token usage. No task-level target or competitor reduction factor is considered validated until a reproducible benchmark corpus and raw results are committed.
 
-**How:**
-1. Semantic search retrieves only relevant code (~1K tokens)
-2. AST compression reduces size 64-70%
-3. Prompt caching saves 90% on repeated context
-4. No large project maps or file dumps
+**Current controls:**
+1. Lexical project-file selection
+2. Bounded excerpts and tool output
+3. Limited conversation history
+4. No automatic project-wide file dump
 
 ### Latency
 
@@ -451,11 +398,11 @@ bun run typecheck
 ### Debugging
 
 ```bash
-# Run with console logs
-bun run src/index.ts
+# Run the supported application
+bun run nimbl
 
 # Debug specific config
-bun run src/index.ts --provider openrouter --model test
+bun run nimbl --provider openrouter --model test
 ```
 
 ### Git Workflow
@@ -478,7 +425,7 @@ git push origin feature/my-feature
 
 ### Short Term
 
-- TUI integration (opencode's Ink components)
+- Additional OpenTUI integration coverage
 - Context budget visualization
 - Learning state persistence (SQLite)
 - Skill tree display
@@ -519,4 +466,3 @@ If you're building on NIMBL and have questions:
 4. Ask in Hack Club community channels
 
 **Happy coding! 🚀**
-

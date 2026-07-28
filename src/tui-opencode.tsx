@@ -4,7 +4,7 @@ import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show }
 import { existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { resolveConfig } from "@/config"
-import { estimateSavings } from "@/core/api"
+import { estimateReferenceCost } from "@/core/api"
 import {
   contextEstimate,
   runAgent,
@@ -13,8 +13,11 @@ import {
   type PermissionRequest,
 } from "@/core/agent"
 import { expandCommand, loadProjectCommands } from "@/core/commands"
+import { ctrlCAction } from "@/core/ctrl-c"
+import { EXIT_CONFIRM_WINDOW_MS, registerExitPress } from "@/core/exit-guard"
 import { loadLearning, observeLearning, saveLearning } from "@/core/learning"
 import { preparePromptContext } from "@/core/prompt-context"
+import { permissionFor } from "@/core/permissions"
 import {
   PROVIDERS,
   defaultModelFor,
@@ -22,22 +25,32 @@ import {
   providerApiKey,
 } from "@/core/providers"
 import { routeProvider } from "@/core/routing"
+import { findSession, latestSession, sessionEpilogue } from "@/core/session-lifecycle"
 import {
   compactSession,
   forkSession,
   recordSnapshot,
+  recordSnapshotGroup,
   redoSnapshot,
   renameSession,
   undoSnapshot,
 } from "@/core/session-actions"
 import {
+  backupInvalidSessionStore,
   loadSessionStore,
   saveSessionStore,
+  type SessionStore,
   type StoredMessage,
   type StoredSession,
 } from "@/core/sessions"
-import { loadSettings, saveSettings, type NimblSettings } from "@/core/settings"
+import { loadSettings, saveSettings, type NimblSettings, type PermissionValue } from "@/core/settings"
+import { runShellCommand } from "@/core/shell"
 import { finishAssistant, reduceAssistantEvents } from "@/core/transcript"
+import {
+  win32DisableProcessedInput,
+  win32FlushInputBuffer,
+  win32InstallCtrlCGuard,
+} from "@/core/terminal-win32"
 import {
   ConfirmDialog,
   DetailDialog,
@@ -57,15 +70,16 @@ import {
   type ToastVariant,
 } from "@/tui-opencode-ui"
 
-const NIMBL_GREEN = "#06402b"
+let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined
+let restoreCtrlCGuard: (() => void) | undefined
 
 const LOGO = [
-  "  ███╗   ██╗ ██╗ ███╗   ███╗ ██████╗  ██╗",
-  "  ████╗  ██║ ██║ ████╗ ████║ ██╔══██╗ ██║",
-  "  ██╔██╗ ██║ ██║ ██╔████╔██║ ██████╔╝ ██║",
-  "  ██║╚██╗██║ ██║ ██║╚██╔╝██║ ██╔══██╗ ██║",
-  "  ██║ ╚████║ ██║ ██║ ╚═╝ ██║ ██████╔╝ ███████╗",
-  "  ╚═╝  ╚═══╝ ╚═╝ ╚═╝     ╚═╝ ╚═════╝  ╚══════╝",
+  "███╗   ██╗ ██╗ ███╗   ███╗ ██████╗  ██╗",
+  "████╗  ██║ ██║ ████╗ ████║ ██╔══██╗ ██║",
+  "██╔██╗ ██║ ██║ ██╔████╔██║ ██████╔╝ ██║",
+  "██║╚██╗██║ ██║ ██║╚██╔╝██║ ██╔══██╗ ██║",
+  "██║ ╚████║ ██║ ██║ ╚═╝ ██║ ██████╔╝ ███████╗",
+  "╚═╝  ╚═══╝ ╚═╝ ╚═╝     ╚═╝ ╚═════╝  ╚══════╝",
 ]
 
 const AGENT_MODES: AgentMode[] = ["build", "plan", "explain", "learn"]
@@ -80,13 +94,13 @@ const PROVIDER_PRIORITY = new Map([
 
 const BASE_COMMANDS: CommandOption[] = [
   { value: "new", title: "New session", description: "Start a clean session", category: "Session", suggested: true },
-  { value: "sessions", title: "Sessions", description: "Switch sessions", category: "Session", suggested: true },
+  { value: "sessions", title: "Sessions", description: "Switch sessions", category: "Session", suggested: true, aliases: ["resume", "continue"] },
   { value: "timeline", title: "Timeline", description: "Jump to an earlier prompt", category: "Session" },
   { value: "rename", title: "Rename session", description: "Change the active title", category: "Session" },
   { value: "fork", title: "Fork session", description: "Branch from this conversation", category: "Session" },
   { value: "pin", title: "Pin session", description: "Toggle the active pin", category: "Session" },
   { value: "delete", title: "Delete session", description: "Remove local conversation history", category: "Session" },
-  { value: "compact", title: "Compact", description: "Summarize older context", category: "Session" },
+  { value: "compact", title: "Compact", description: "Replace older messages with lossy excerpts", category: "Session" },
   { value: "clear", title: "Clear", description: "Clear the active transcript", category: "Session" },
   { value: "model", title: "Model", description: "Select a model", category: "Configuration", suggested: true },
   { value: "provider", title: "Provider", description: "Connect or select a provider", category: "Configuration", suggested: true },
@@ -101,12 +115,12 @@ const BASE_COMMANDS: CommandOption[] = [
   { value: "sidebar", title: "Toggle sidebar", description: "Show or hide session details", category: "View" },
   { value: "home", title: "Home", description: "Return to the NIMBL home screen", category: "View" },
   { value: "help", title: "Help", description: "Show keyboard shortcuts", category: "View" },
-  { value: "undo", title: "Undo", description: "Undo the latest approved file change", category: "Project" },
+  { value: "undo", title: "Undo", description: "Undo the latest tracked write, edit, or patch", category: "Project" },
   { value: "redo", title: "Redo", description: "Reapply the latest undone change", category: "Project" },
   { value: "init", title: "Initialize project rules", description: "Create NIMBL.md", category: "Project" },
   { value: "export", title: "Export", description: "Export the active session", category: "Project" },
-  { value: "share", title: "Share", description: "Create a local share export", category: "Project" },
-  { value: "unshare", title: "Disable sharing", description: "Disable local share output", category: "Project" },
+  { value: "share", title: "Export copy", description: "Create a local Markdown copy", category: "Project" },
+  { value: "unshare", title: "Disable export copies", description: "Disable local /share exports", category: "Project" },
   { value: "palette", title: "Command palette", description: "Browse every action", category: "NIMBL" },
   { value: "quit", title: "Quit", description: "Exit NIMBL", category: "NIMBL" },
 ]
@@ -196,6 +210,17 @@ function commandLine(value: string) {
   return { name, argument: rest.join(" ") }
 }
 
+function matchesKeybind(event: any, binding: string | undefined) {
+  if (!binding) return false
+  const parts = binding.toLowerCase().split("+")
+  const key = parts.at(-1)
+  const name = String(event.name || event.key || "").toLowerCase()
+  return name === key
+    && Boolean(event.ctrl) === parts.includes("ctrl")
+    && Boolean(event.shift) === parts.includes("shift")
+    && Boolean(event.meta) === parts.includes("alt")
+}
+
 function visibleMessages(session: StoredSession): ChatMessage[] {
   return session.messages.flatMap((message) => {
     if (message.role === "tool" || message.role === "reasoning") return []
@@ -211,14 +236,31 @@ export function App() {
   const [settings, setSettings] = createSignal<NimblSettings>(loadSettings(directory))
   const [learning, setLearning] = createSignal(loadLearning(directory))
   const projectCommands = loadProjectCommands(directory)
-  const store = loadSessionStore(directory)
+  const storeResult = loadSessionStore(directory)
+  let recoveryNotice: string | undefined
+  let store: SessionStore | undefined
+  if (storeResult.status === "valid") store = storeResult.store
+  if (storeResult.status === "invalid") {
+    try {
+      const backup = backupInvalidSessionStore(storeResult)
+      recoveryNotice = `Invalid session data at ${storeResult.file} was preserved at ${backup}. Started a recovery session.`
+    } catch (error) {
+      throw new Error(`Session data at ${storeResult.file} is invalid and could not be backed up. NIMBL will not overwrite it. ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
   const requestedSessionID = flagValue(argv, "-s") || flagValue(argv, "--session")
-  const initialSessions: StoredSession[] = store?.sessions.length
-    ? store.sessions
+  const continueRequested = argv.includes("-c") || argv.includes("--continue")
+  const forkRequested = argv.includes("--fork")
+  const persistedSessions = store?.sessions ?? []
+  const resumeBase = requestedSessionID
+    ? findSession(persistedSessions, requestedSessionID)
+    : continueRequested
+      ? latestSession(persistedSessions)
+      : undefined
+  const resumed = resumeBase && forkRequested ? forkSession(resumeBase, id()) : resumeBase
+  const initialSessions: StoredSession[] = persistedSessions.length
+    ? resumed && forkRequested ? [resumed, ...persistedSessions] : persistedSessions
     : [{ id: id(), title: "New session", messages: [], agent: "build", created: Date.now() }]
-  const resumed = requestedSessionID
-    ? initialSessions.find((session) => session.id === requestedSessionID || session.id.startsWith(requestedSessionID))
-    : undefined
   const initialActiveID = resumed?.id
     || (store?.activeID && initialSessions.some((session) => session.id === store.activeID) ? store.activeID : initialSessions[0]!.id)
   const explicitProvider = flagValue(argv, "--provider")
@@ -239,6 +281,7 @@ export function App() {
   const [detail, setDetail] = createSignal({ title: "", lines: [] as string[] })
   const [pendingProvider, setPendingProvider] = createSignal<{ provider: string; model: string }>()
   const [pendingDelete, setPendingDelete] = createSignal<string>()
+  const [pendingRename, setPendingRename] = createSignal<string>()
   const [selectedMessageID, setSelectedMessageID] = createSignal<string>()
   const [sidebarMode, setSidebarMode] = createSignal<"auto" | boolean>("auto")
   const [runningSessionID, setRunningSessionID] = createSignal<string>()
@@ -247,14 +290,22 @@ export function App() {
   const [questionQueue, setQuestionQueue] = createSignal<PendingQuestion[]>([])
   const [alwaysAllowed, setAlwaysAllowed] = createSignal(new Set<string>())
   const [toast, setToast] = createSignal<ToastState>()
+  const [exitArmedAt, setExitArmedAt] = createSignal<number>()
 
   let sessionPrompt: SessionPromptRef | undefined
   let persistTimer: ReturnType<typeof setTimeout> | undefined
   let toastTimer: ReturnType<typeof setTimeout> | undefined
+  let focusTimer: ReturnType<typeof setTimeout> | undefined
+  let exitTimer: ReturnType<typeof setTimeout> | undefined
+  let focusGeneration = 0
+  let shuttingDown = false
 
   const active = createMemo(() => sessions().find((session) => session.id === activeID()) || sessions()[0]!)
   const sidebarVisible = createMemo(() => sidebarMode() === "auto" ? dimensions().width > 120 : sidebarMode() as boolean)
+  const contentWidth = createMemo(() => Math.max(20, dimensions().width - (sidebarVisible() && dimensions().width > 120 ? 42 : 0) - 4))
   const activeMessage = createMemo(() => active().messages.find((message) => message.id === selectedMessageID()))
+  const renameTarget = createMemo(() => sessions().find((session) => session.id === pendingRename()) ?? active())
+  const deleteTarget = createMemo(() => sessions().find((session) => session.id === pendingDelete()) ?? active())
   const currentApproval = createMemo(() => approvalQueue()[0])
   const currentQuestion = createMemo(() => questionQueue()[0])
   const uiSession = createMemo<ChatSession>(() => ({
@@ -316,7 +367,7 @@ export function App() {
         const date = new Date(session.updated || session.created).toDateString()
         return {
           value: session.id,
-          title: session.title,
+          title: pendingDelete() === session.id ? "Press ctrl+d again to confirm" : session.title,
           category: session.pinned ? "Pinned" : date === today ? "Today" : date,
           current: session.id === activeID(),
         }
@@ -353,9 +404,9 @@ export function App() {
     persistTimer = setTimeout(persistNow, 500)
   }
 
-  function setSession(sessionID: string, mutate: (session: StoredSession) => StoredSession) {
+  function setSession(sessionID: string, mutate: (session: StoredSession) => StoredSession, persist = true) {
     setSessions((all) => all.map((session) => session.id === sessionID ? mutate(session) : session))
-    schedulePersist()
+    if (persist) schedulePersist()
   }
 
   function addMessage(sessionID: string, message: StoredMessage) {
@@ -366,12 +417,12 @@ export function App() {
     }))
   }
 
-  function updateMessage(sessionID: string, messageID: string, mutate: (message: StoredMessage) => StoredMessage) {
+  function updateMessage(sessionID: string, messageID: string, mutate: (message: StoredMessage) => StoredMessage, persist = true) {
     setSession(sessionID, (session) => ({
       ...session,
       messages: session.messages.map((message) => message.id === messageID ? mutate(message) : message),
       updated: Date.now(),
-    }))
+    }), persist)
   }
 
   function showToast(message: string, variant: ToastVariant = "info", title?: string) {
@@ -381,7 +432,11 @@ export function App() {
   }
 
   function focusPrompt() {
-    setTimeout(() => {
+    if (focusTimer) clearTimeout(focusTimer)
+    const generation = ++focusGeneration
+    focusTimer = setTimeout(() => {
+      focusTimer = undefined
+      if (generation !== focusGeneration) return
       if (dialog()) return
       sessionPrompt?.focus()
     }, 1)
@@ -391,8 +446,86 @@ export function App() {
     setDialog(null)
     setPendingProvider(undefined)
     setPendingDelete(undefined)
+    setPendingRename(undefined)
     setSelectedMessageID(undefined)
     focusPrompt()
+  }
+
+  function resetExitArm() {
+    setExitArmedAt(undefined)
+    if (exitTimer) clearTimeout(exitTimer)
+    exitTimer = undefined
+  }
+
+  function prepareShutdown() {
+    abortController()?.abort()
+    for (const pending of approvalQueue()) pending.resolve("reject")
+    for (const pending of questionQueue()) pending.resolve("Interrupted by user")
+    setApprovalQueue([])
+    setQuestionQueue([])
+    try {
+      persistNow()
+    } catch {
+      // Terminal restoration must not depend on persistence succeeding.
+    }
+  }
+
+  function shutdown(code = 0) {
+    if (shuttingDown) return
+    shuttingDown = true
+    const epilogue = code === 0 && view() === "session" ? sessionEpilogue(active()) : undefined
+    resetExitArm()
+    prepareShutdown()
+    try {
+      renderer?.destroy()
+    } finally {
+      restoreCtrlCGuard?.()
+      restoreCtrlCGuard = undefined
+      win32FlushInputBuffer()
+      if (epilogue) process.stdout.write(epilogue + "\n")
+      process.exitCode = code
+    }
+  }
+
+  function armOrExit() {
+    const next = registerExitPress(exitArmedAt(), Date.now())
+    if (next.exit) return shutdown()
+    setExitArmedAt(next.armedAt)
+    if (exitTimer) clearTimeout(exitTimer)
+    const message = "Press Ctrl+C again to exit."
+    exitTimer = setTimeout(() => {
+      exitTimer = undefined
+      setExitArmedAt(undefined)
+      setToast((current) => current?.message === message ? undefined : current)
+    }, EXIT_CONFIRM_WINDOW_MS)
+    showToast(message, "warning")
+  }
+
+  function handleCtrlC(event?: any) {
+    event?.preventDefault?.()
+    event?.stopPropagation?.()
+    if (event?.repeat) return
+
+    const selection = renderer?.getSelection?.()?.getSelectedText?.()
+    const action = ctrlCAction({
+      selection: Boolean(selection),
+      dialog: Boolean(dialog()),
+      approval: Boolean(currentApproval()),
+      question: Boolean(currentQuestion()),
+      running: Boolean(runningSessionID()),
+      draft: Boolean(draft()),
+    })
+    if (action !== "exit") resetExitArm()
+    if (action === "copy") {
+      renderer?.copyToClipboardOSC52?.(selection!)
+      renderer?.clearSelection?.()
+      showToast("Copied selection to clipboard.", "success")
+    } else if (action === "close-dialog") closeDialog()
+    else if (action === "reject-approval") answerApproval("reject")
+    else if (action === "cancel-question") answerQuestion("Interrupted by user")
+    else if (action === "abort-run") abortRun()
+    else if (action === "clear-draft") setDraft("")
+    else armOrExit()
   }
 
   function openDetail(title: string, lines: string[]) {
@@ -418,6 +551,14 @@ export function App() {
     if (!pending) return
     if (choice === "always") {
       setAlwaysAllowed((current) => new Set([...current, approvalKey(pending.request)]))
+      const target = pending.request.target || pending.request.detail
+      const existing = settings().permissions[pending.request.tool]
+      const rule: Record<string, PermissionValue> = typeof existing === "object" ? { ...existing } : { "*": existing || "ask" }
+      rule[target] = "allow"
+      persistSettings({
+        ...settings(),
+        permissions: { ...settings().permissions, [pending.request.tool]: rule },
+      })
     }
     setApprovalQueue((queue) => queue.slice(1))
     pending.resolve(choice)
@@ -449,34 +590,14 @@ export function App() {
 
   async function runPromptCommand(command: string, sessionID: string, mode: AgentMode, signal: AbortSignal) {
     if (mode !== "build") throw new Error(`${modeLabel(mode)} mode cannot run prompt commands. Switch to Build first.`)
-    const choice = await askApproval(sessionID, {
-      id: id(),
-      tool: "bash",
-      title: "Run prompt command",
-      detail: command,
-      target: command,
-    })
-    if (choice === "reject") throw new Error("The prompt command was rejected.")
-    const child = Bun.spawn(
-      process.platform === "win32"
-        ? ["powershell.exe", "-NoProfile", "-Command", command]
-        : ["/bin/sh", "-lc", command],
-      { cwd: directory, stdout: "pipe", stderr: "pipe" },
-    )
-    const abort = () => child.kill()
-    signal.addEventListener("abort", abort, { once: true })
-    try {
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-        child.exited,
-      ])
-      if (signal.aborted) throw new Error("Command interrupted.")
-      const output = stdout + (stderr ? `\n${stderr}` : "") || "(no output)"
-      return output.slice(0, 12_000) + (code ? `\n(exit ${code})` : "")
-    } finally {
-      signal.removeEventListener("abort", abort)
+    const policy = permissionFor(settings().permissions, { tool: "bash", target: command })
+    if (policy === "deny") throw new Error("The prompt command is blocked by project policy.")
+    if (policy === "ask") {
+      const choice = await askApproval(sessionID, { id: id(), tool: "bash", title: "Run prompt command", detail: command, target: command })
+      if (choice === "reject") throw new Error("The prompt command was rejected.")
     }
+    const result = await runShellCommand(command, directory, { signal })
+    return result.output + (result.code ? `\n(exit ${result.code})` : "")
   }
 
   function history(session: StoredSession): AgentMessage[] {
@@ -517,7 +638,7 @@ export function App() {
       if (!assistantID || !eventQueue.length) return
       const events = eventQueue
       eventQueue = []
-      updateMessage(sessionID, assistantID, (message) => reduceAssistantEvents(message, events, id))
+      updateMessage(sessionID, assistantID, (message) => reduceAssistantEvents(message, events, id), false)
     }
 
     function queueEvent(event: AgentEvent) {
@@ -588,12 +709,14 @@ export function App() {
         requestApproval: (request) => askApproval(sessionID, request),
         askQuestion: (question) => askQuestion(sessionID, question),
         onFileChange: (change) => setSession(sessionID, (value) => recordSnapshot(value, { ...change, time: Date.now() })),
+        onFileChanges: (changes) => setSession(sessionID, (value) => recordSnapshotGroup(value, changes, Date.now())),
+        onRetry: ({ attempt, message }) => showToast(`Retrying request (${attempt}/3): ${message}`, "warning"),
         onEvent: queueEvent,
       })
 
       flushEvents()
       const completed = Date.now()
-      const cost = estimateSavings(result.usage.inputTokens, result.usage.outputTokens)
+      const cost = estimateReferenceCost(result.usage.inputTokens, result.usage.outputTokens)
       updateMessage(sessionID, assistantID, (message) => finishAssistant(message, completed))
       setSession(sessionID, (value) => ({
         ...value,
@@ -705,14 +828,31 @@ export function App() {
     showToast(`Connected ${providerName(pending.provider)} for this run.`, "success")
   }
 
-  function deleteSession() {
+  function deleteSession(closeAfter = true) {
     const target = pendingDelete()
-    if (!target || sessions().length === 1) return closeDialog()
-    const next = sessions().find((session) => session.id !== target)!
+    if (!target) return
+    if (sessions().length === 1) {
+      setPendingDelete(undefined)
+      showToast("Keep at least one session.", "warning")
+      return
+    }
+    const deletingActive = target === activeID()
+    const next = deletingActive ? sessions().find((session) => session.id !== target) : undefined
     setSessions((all) => all.filter((session) => session.id !== target))
-    setActiveID(next.id)
+    if (next) setActiveID(next.id)
+    setPendingDelete(undefined)
     schedulePersist()
-    closeDialog()
+    if (closeAfter) closeDialog()
+  }
+
+  function toggleSessionPin(sessionID: string) {
+    setSession(sessionID, (session) => ({ ...session, pinned: !session.pinned, updated: Date.now() }))
+  }
+
+  function openSessionRename(sessionID: string) {
+    setPendingRename(sessionID)
+    setPendingDelete(undefined)
+    setDialog("rename")
   }
 
   function copyMessage(message: StoredMessage) {
@@ -733,14 +873,12 @@ export function App() {
     closeDialog()
   }
 
-  function revertToMessage(message: StoredMessage) {
+  function trimToMessage(message: StoredMessage) {
     const index = active().messages.findIndex((item) => item.id === message.id)
     if (index < 0) return
     setSession(activeID(), (session) => ({
       ...session,
       messages: session.messages.slice(0, index + 1),
-      snapshots: [],
-      redoSnapshots: [],
       updated: Date.now(),
     }))
     setDraft(message.role === "user" ? message.text : "")
@@ -762,6 +900,7 @@ export function App() {
   }
 
   function execute(name: string, argument = "") {
+    if (name === "resume" || name === "continue") name = "sessions"
     if (name === "new") return newSession()
     if (name === "sessions") return setDialog("sessions")
     if (name === "timeline") return setDialog("timeline")
@@ -770,7 +909,7 @@ export function App() {
         setSession(activeID(), (session) => renameSession(session, argument))
         return
       }
-      return setDialog("rename")
+      return openSessionRename(activeID())
     }
     if (name === "fork") {
       const fork = forkSession(active(), id())
@@ -780,7 +919,7 @@ export function App() {
       schedulePersist()
       return
     }
-    if (name === "pin") return setSession(activeID(), (session) => ({ ...session, pinned: !session.pinned, updated: Date.now() }))
+    if (name === "pin") return toggleSessionPin(activeID())
     if (name === "delete") {
       if (sessions().length === 1) return showToast("Keep at least one session.", "warning")
       setPendingDelete(activeID())
@@ -794,7 +933,7 @@ export function App() {
     if (name === "home") return setView("home")
     if (name === "compact") {
       setSession(activeID(), (session) => compactSession(session))
-      return showToast("Older context compacted.", "success")
+      return showToast("Older messages replaced with lossy excerpts.", "success")
     }
     if (name === "undo" || name === "redo") {
       try {
@@ -823,6 +962,8 @@ export function App() {
       `Model: ${model()}`,
       `Agent: ${modeLabel(active().agent)}`,
       `Session: ${active().title}`,
+      `Session ID: ${active().id}`,
+      `Continue: nimbl -s ${active().id}`,
       `Prompts: ${active().messages.filter((message) => message.role === "user").length}`,
       `Tokens: ${formatTokens(active().tokens || 0)}`,
       `Reference cost: $${(active().cost || 0).toFixed(4)}`,
@@ -834,7 +975,8 @@ export function App() {
     if (name === "help") return openDetail("Keyboard shortcuts", [
       "Tab        cycle Build / Plan / Explain / Learn",
       "Ctrl+P     command palette",
-      "Esc        close popup or interrupt a run",
+      "Ctrl+C     copy selection; press twice to exit",
+      "Esc        close popup; press twice to interrupt a run",
       "↑ / ↓      move selection",
       "Enter      select or submit",
       "/sessions  switch sessions",
@@ -842,9 +984,9 @@ export function App() {
     ])
     if (name === "keybinds") return openDetail("Keybindings", Object.entries(settings().keybinds).map(([action, key]) => `${action}: ${key}`))
     if (name === "settings") return openDetail("Settings", [
-      `MCP servers: ${Object.keys(settings().mcp).length}`,
-      `Plugins: ${settings().plugins.length}`,
-      `LSP servers: ${Object.keys(settings().lsp).length}`,
+      `MCP entries (runtime unavailable): ${Object.keys(settings().mcp).length}`,
+      `Plugin entries (runtime unavailable): ${settings().plugins.length}`,
+      `LSP entries (runtime unavailable): ${Object.keys(settings().lsp).length}`,
       `Custom commands: ${Object.keys(settings().customCommands).length}`,
       `Edit permission: ${String(settings().permissions.edit || settings().permissions["*"])}`,
       `Shell permission: ${String(settings().permissions.bash || settings().permissions["*"])}`,
@@ -874,17 +1016,15 @@ export function App() {
     }
     if (name === "export") return exportSession()
     if (name === "share") {
-      if (settings().share === "disabled") return showToast("Sharing is disabled for this project.", "warning")
+      if (settings().share === "disabled") return showToast("Local export copies are disabled for this project.", "warning")
       return exportSession("nimbl-share")
     }
     if (name === "unshare") {
       persistSettings({ ...settings(), share: "disabled" })
-      return showToast("Local session sharing disabled.", "success")
+      return showToast("Local /share export copies disabled.", "success")
     }
     if (name === "quit") {
-      persistNow()
-      renderer?.destroy()
-      process.exit(0)
+      return shutdown()
     }
 
     const custom = configuredCommands()[name]
@@ -902,7 +1042,7 @@ export function App() {
     if (!text) return
     if (text.startsWith("/")) {
       const command = commandLine(text)
-      if (availableCommands().some((item) => item.value === command.name)) {
+      if (["resume", "continue"].includes(command.name) || availableCommands().some((item) => item.value === command.name)) {
         setDraft("")
         execute(command.name, command.argument)
         return
@@ -918,16 +1058,32 @@ export function App() {
   }
 
   useKeyboard((event: any) => {
+    const name = String(event.name || event.key || "").toLowerCase()
+    if (event.ctrl && name === "c") return handleCtrlC(event)
+    if (exitArmedAt()) resetExitArm()
+    if ((name === "escape" || name === "esc") && renderer?.getSelection?.()?.getSelectedText?.()) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      renderer.clearSelection()
+      return
+    }
     if (currentApproval() || currentQuestion()) return
     if (dialog()) return
-    const name = String(event.name || event.key || "").toLowerCase()
-    if (event.ctrl && name === "p") {
+    if (matchesKeybind(event, settings().keybinds.palette)) {
       event.preventDefault?.()
+      event.stopPropagation?.()
       setDialog("palette")
       return
     }
-    if (name === "tab") {
+    if (matchesKeybind(event, settings().keybinds.sessions)) {
       event.preventDefault?.()
+      event.stopPropagation?.()
+      setDialog("sessions")
+      return
+    }
+    if (matchesKeybind(event, settings().keybinds.agent)) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
       changeAgent(nextAgentMode(active().agent))
       return
     }
@@ -940,34 +1096,49 @@ export function App() {
   createEffect(() => {
     const open = dialog()
     view()
+    const generation = ++focusGeneration
     queueMicrotask(() => {
+      if (generation !== focusGeneration || open !== dialog()) return
       if (sessionPrompt) open ? sessionPrompt.blur() : sessionPrompt.focus()
     })
   })
 
+  createEffect(() => {
+    const title = view() === "session" ? active().title : ""
+    renderer?.setTerminalTitle(title ? `NIMBL | ${title.slice(0, 40)}` : "NIMBL")
+  })
+
   onMount(() => {
     schedulePersist()
-    if (requestedSessionID && !resumed) {
+    if (recoveryNotice) {
+      showToast(recoveryNotice, "error", "Session recovery")
+    } else if (requestedSessionID && !resumed) {
       showToast(`Session '${requestedSessionID}' was not found. Started a new session instead.`, "warning")
+    } else if (continueRequested && !resumed) {
+      showToast("No previous session was found. Started a new session instead.", "warning")
+    } else if (forkRequested && !requestedSessionID && !continueRequested) {
+      showToast("--fork requires --continue or --session.", "warning")
     }
   })
 
   onCleanup(() => {
     if (persistTimer) clearTimeout(persistTimer)
     if (toastTimer) clearTimeout(toastTimer)
-    abortController()?.abort()
+    if (focusTimer) clearTimeout(focusTimer)
+    if (exitTimer) clearTimeout(exitTimer)
+    if (!shuttingDown) prepareShutdown()
   })
 
   const dialogSize = createMemo(() => ["sessions", "timeline"].includes(dialog() || "") ? "large" as const : "medium" as const)
 
   return (
     <Show
-      when={dimensions().width >= 60 && dimensions().height >= 22}
+      when={dimensions().width >= 60 && dimensions().height >= 18}
       fallback={
         <box width={dimensions().width} height={dimensions().height} alignItems="center" justifyContent="center" backgroundColor={theme.background}>
           <box>
             <text fg={theme.text}><b>NIMBL needs more terminal space</b></text>
-            <text fg={theme.textMuted}>Resize to at least 60 columns × 22 rows.</text>
+            <text fg={theme.textMuted}>Resize to at least 60 columns × 18 rows.</text>
           </box>
         </box>
       }
@@ -991,6 +1162,8 @@ export function App() {
             sidebarVisible={sidebarVisible()}
             contextText={contextText()}
             cost={active().cost || 0}
+            contentWidth={contentWidth()}
+            keyboardDisabled={dialog() !== null}
             pendingApproval={currentApproval() ? {
               title: currentApproval()!.request.title,
               detail: currentApproval()!.request.detail,
@@ -1011,12 +1184,12 @@ export function App() {
             <box flexGrow={1} minHeight={0} alignItems="center" paddingLeft={2} paddingRight={2}>
               <box flexGrow={1} minHeight={0} />
               <box height={4} minHeight={0} flexShrink={1} />
-              <box flexShrink={0} flexDirection="column" paddingLeft={2}>
-                <For each={LOGO}>{(line) => <text fg={NIMBL_GREEN}>{line}</text>}</For>
+              <box flexShrink={0} flexDirection="column">
+                <For each={LOGO}>{(line) => <text fg={theme.primaryForeground}>{line}</text>}</For>
               </box>
               <box height={1} minHeight={0} flexShrink={1} />
-              <box paddingLeft={2}><text fg={theme.text}>Token-efficient AI coding companion</text></box>
-              <box paddingLeft={2}><text fg={theme.textMuted}>Learn more. Use fewer tokens.</text></box>
+              <box><text fg={theme.text}>Token-efficient AI coding companion</text></box>
+              <box><text fg={theme.textMuted}>Learn more. Use fewer tokens.</text></box>
               <box height={1} minHeight={0} flexShrink={1} />
               <box width="100%" maxWidth={75} zIndex={1000} paddingTop={1} flexShrink={0}>
                 <SessionPrompt
@@ -1038,9 +1211,10 @@ export function App() {
               <box flexGrow={1} minHeight={0} />
             </box>
             <box width="100%" paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2} flexDirection="row" flexShrink={0} gap={2}>
-              <text fg={theme.textMuted} wrapMode="none">{directory}</text>
-              <box flexGrow={1} />
-              <text fg={theme.textMuted}>NIMBL</text>
+              <box flexGrow={1} minWidth={0} overflow="hidden">
+                <text fg={theme.textMuted} wrapMode="none">{directory}</text>
+              </box>
+              <text flexShrink={0} fg={theme.textMuted}>NIMBL</text>
             </box>
           </box>
         </Show>
@@ -1081,7 +1255,21 @@ export function App() {
             <SelectDialog
               title="Sessions"
               options={sessionOptions()}
+              preserveSelection
+              onMove={(value) => setPendingDelete((current) => current === value ? current : undefined)}
               onSelect={(value) => { setActiveID(value); setView("session"); schedulePersist(); closeDialog() }}
+              actions={[
+                { key: "ctrl+f", title: "pin/unpin", onTrigger: (value) => toggleSessionPin(value) },
+                {
+                  key: "ctrl+d",
+                  title: "delete",
+                  onTrigger: (value) => {
+                    if (pendingDelete() === value) deleteSession(false)
+                    else setPendingDelete(value)
+                  },
+                },
+                { key: "ctrl+r", title: "rename", onTrigger: (value) => openSessionRename(value) },
+              ]}
               onClose={closeDialog}
             />
           </Show>
@@ -1098,7 +1286,7 @@ export function App() {
             <SelectDialog
               title="Message Actions"
               options={[
-                { value: "revert", title: "Revert", description: "undo messages and file changes" },
+                { value: "trim", title: "Trim conversation", description: "remove messages after this point; files are unchanged" },
                 { value: "copy", title: "Copy", description: "message text to clipboard" },
                 { value: "fork", title: "Fork", description: "create a new session" },
                 { value: "resend", title: "Edit and resend", description: "restore this prompt" },
@@ -1108,7 +1296,7 @@ export function App() {
                 if (value === "resend") { setDraft(message.text); closeDialog(); return }
                 if (value === "copy") return copyMessage(message)
                 if (value === "fork") return forkFromMessage(message)
-                if (value === "revert") return revertToMessage(message)
+                if (value === "trim") return trimToMessage(message)
               }}
               onClose={closeDialog}
             />
@@ -1126,15 +1314,15 @@ export function App() {
           <Show when={dialog() === "rename"}>
             <TextPromptDialog
               title="Rename session"
-              value={active().title}
-              onConfirm={(value) => { setSession(activeID(), (session) => renameSession(session, value)); closeDialog() }}
+              value={renameTarget().title}
+              onConfirm={(value) => { setSession(renameTarget().id, (session) => renameSession(session, value)); closeDialog() }}
               onClose={closeDialog}
             />
           </Show>
           <Show when={dialog() === "delete"}>
             <ConfirmDialog
               title="Delete session"
-              message={`Delete '${active().title}' and its local conversation history?`}
+              message={`Delete '${deleteTarget().title}' and its local conversation history?`}
               confirmLabel="Delete"
               onConfirm={deleteSession}
               onClose={closeDialog}
@@ -1149,16 +1337,29 @@ export function App() {
   )
 }
 
-let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined
-
 if (process.env.NIMBL_TEST_RENDERER !== "1") {
-  renderer = await createCliRenderer({ externalOutputMode: "passthrough", targetFps: 60 })
+  restoreCtrlCGuard = win32InstallCtrlCGuard()
   try {
+    renderer = await createCliRenderer({
+      externalOutputMode: "passthrough",
+      targetFps: 60,
+      gatherStats: false,
+      exitOnCtrlC: false,
+      autoFocus: false,
+      openConsoleOnError: false,
+    })
+    win32DisableProcessedInput()
     await render(() => <App />, renderer)
   } catch (error) {
     const message = error instanceof Error ? error.stack || error.message : String(error)
-    writeFileSync("nimbl-error.log", `TUI CRASH:\n${message}\n`, "utf8")
-    renderer.destroy()
-    process.exit(1)
+    try {
+      writeFileSync("nimbl-error.log", `TUI CRASH:\n${message}\n`, "utf8")
+    } finally {
+      renderer?.destroy()
+      restoreCtrlCGuard?.()
+      restoreCtrlCGuard = undefined
+      win32FlushInputBuffer()
+      process.exitCode = 1
+    }
   }
 }

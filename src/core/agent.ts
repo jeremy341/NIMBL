@@ -2,13 +2,16 @@ import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import { stepCountIs, streamText, tool } from "ai"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path"
+import { basename, dirname, resolve } from "node:path"
 import { z } from "zod"
 import { getProvider } from "./providers"
 import { selectProjectContextWithBudget } from "./context"
 import { teachingPrompt, type LearningState } from "./learning"
 import type { PermissionSettings } from "./settings"
 import { permissionExplanation, permissionFor } from "./permissions"
+import { ASSISTANT_RESPONSE_STYLE, stripEmojis } from "./response-style"
+import { resolveProjectPath, resolveUnprotectedProjectPath } from "./project-path"
+import { runShellCommand } from "./shell"
 
 export type AgentMode = "build" | "plan" | "explain" | "learn"
 export type ApprovalChoice = "once" | "always" | "reject"
@@ -55,11 +58,14 @@ export interface AgentRunOptions {
   onEvent: (event: AgentEvent) => void
   requestApproval: (request: PermissionRequest) => Promise<ApprovalChoice>
   askQuestion?: (question: { id: string; prompt: string; options: string[] }) => Promise<string>
-  onFileChange?: (change: { path: string; before: string; after: string }) => void
+  onFileChange?: (change: { path: string; before: string; after: string; beforeExists: boolean; afterExists: boolean }) => void
+  onFileChanges?: (changes: { path: string; before: string; after: string; beforeExists: boolean; afterExists: boolean }[]) => void
   learning?: LearningState
   abortSignal?: AbortSignal
   permissions?: PermissionSettings
   contextWindow?: number
+  onRetry?: (retry: { attempt: number; message: string }) => void
+  retryDelayMs?: number
 }
 
 export interface AgentRunResult {
@@ -71,6 +77,7 @@ export interface AgentRunResult {
 const MAX_FILE_BYTES = 48_000
 const MAX_SEARCH_FILES = 250
 const MAX_TOOL_STEPS = 12
+const MAX_ATTEMPTS = 3
 
 const MODE_TOOLS: Record<AgentMode, readonly PermissionRequest["tool"][]> = {
   build: ["read", "glob", "grep", "write", "edit", "apply_patch", "bash", "webfetch", "skill", "question", "todowrite"],
@@ -99,20 +106,31 @@ function createModel(config: Pick<AgentRunOptions, "provider" | "model" | "apiKe
 
 function toolID() { return Math.random().toString(36).slice(2, 10) }
 
+function retryable(error: unknown) {
+  if (error instanceof TypeError) return true
+  if (!error || typeof error !== "object") return false
+  const status = "statusCode" in error ? Number(error.statusCode) : "status" in error ? Number(error.status) : 0
+  const code = "code" in error ? String(error.code) : ""
+  return status === 408 || status === 409 || status === 429 || status >= 500 || ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN"].includes(code)
+}
+
+function wait(ms: number, signal?: AbortSignal) {
+  if (signal?.aborted) return Promise.reject(new Error("Interrupted by user."))
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms)
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer)
+      reject(new Error("Interrupted by user."))
+    }, { once: true })
+  })
+}
+
 function relativePath(root: string, path: string) {
-  const full = resolve(root, path)
-  const rel = relative(root, full)
-  if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new Error(`Path "${path}" resolved to "${rel}" which is outside this project.`)
-  return { full, rel: rel.replaceAll("\\", "/") }
+  return resolveProjectPath(root, path)
 }
 
 function assertReadable(root: string, path: string) {
-  const result = relativePath(root, path)
-  const name = basename(result.full)
-  if ((name === ".env" || name.startsWith(".env.")) && name !== ".env.example") {
-    throw new Error("Reading environment files is blocked by NIMBL’s default safety policy.")
-  }
-  return result
+  return resolveUnprotectedProjectPath(root, path)
 }
 
 function clip(text: string, limit = MAX_FILE_BYTES) {
@@ -139,25 +157,12 @@ function fileDiff(path: string, before: string, after: string) {
 
 function projectInstructions(root: string) {
   return ["AGENTS.md", "NIMBL.md"]
-    .map((name) => resolve(root, name))
-    .filter((file) => existsSync(file))
+    .map((name) => {
+      try { return resolveUnprotectedProjectPath(root, name).full } catch { return "" }
+    })
+    .filter((file) => file && existsSync(file))
     .map((file) => `Project instructions (${basename(file)}):\n${clip(readFileSync(file, "utf8"), 12_000)}`)
     .join("\n\n")
-}
-
-async function shell(command: string, cwd: string, signal?: AbortSignal) {
-  const child = Bun.spawn(process.platform === "win32"
-    ? ["powershell.exe", "-NoProfile", "-Command", command]
-    : ["/bin/sh", "-lc", command], { cwd, stdout: "pipe", stderr: "pipe" })
-  const abort = () => child.kill()
-  signal?.addEventListener("abort", abort, { once: true })
-  try {
-    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
-    if (signal?.aborted) throw new Error("Command interrupted.")
-    return { code, output: clip((stdout + (stderr ? "\n" + stderr : "")).trim() || "(no output)", 12_000) }
-  } finally {
-    signal?.removeEventListener("abort", abort)
-  }
 }
 
 function safeURL(value: string) {
@@ -169,9 +174,7 @@ function safeURL(value: string) {
 function skillFile(root: string, name: string) {
   if (!/^[a-z0-9][a-z0-9_-]*$/i.test(name)) throw new Error("Skill names may contain letters, numbers, _ and - only.")
   const file = resolve(root, ".nimbl", "skills", name, "SKILL.md")
-  const rel = relative(root, file)
-  if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Skill must remain inside this project.")
-  return file
+  return resolveUnprotectedProjectPath(root, file).full
 }
 
 function patchPaths(root: string, patch: string) {
@@ -192,7 +195,11 @@ async function applyUnifiedPatch(root: string, patch: string) {
 }
 
 export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult> {
-  const emitTool = (event: Omit<ToolEvent, "kind">) => options.onEvent({ kind: "tool", ...event })
+  let attemptActivity = false
+  const emitTool = (event: Omit<ToolEvent, "kind">) => {
+    attemptActivity = true
+    options.onEvent({ kind: "tool", ...event })
+  }
   const approve = async (toolName: PermissionRequest["tool"], title: string, detail: string, diff?: string, target?: string) => {
     assertModeTool(options.mode, toolName)
     const policy = permissionFor(options.permissions, { tool: toolName, target: target || detail })
@@ -209,9 +216,8 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       execute: async ({ path, startLine, endLine }) => {
         const event = toolID(); emitTool({ id: event, tool: "read", state: "running", title: "Read " + path, path })
         try {
-          assertModeTool(options.mode, "read")
           const target = assertReadable(options.root, path)
-          if (permissionFor(options.permissions, { tool: "read", target: target.rel }) === "deny") throw new Error("read is blocked by project policy.")
+          await approve("read", "Read " + target.rel, "Read this project file.", undefined, target.rel)
           const lines = readFileSync(target.full, "utf8").split("\n")
           const text = lines.slice((startLine || 1) - 1, endLine || lines.length).map((line, index) => String((startLine || 1) + index).padStart(5) + "  " + line).join("\n")
           const output = clip(text)
@@ -226,11 +232,12 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       execute: async ({ pattern }) => {
         const event = toolID(); emitTool({ id: event, tool: "glob", state: "running", title: "Find " + pattern })
         try {
-          assertModeTool(options.mode, "glob")
-          if (permissionFor(options.permissions, { tool: "glob", target: pattern }) === "deny") throw new Error("glob is blocked by project policy.")
+          await approve("glob", "Find " + pattern, "Search project file names.", undefined, pattern)
           const files: string[] = []
           for await (const match of new Bun.Glob(pattern).scan({ cwd: options.root, onlyFiles: true })) {
-            if (!match.includes("node_modules/") && !match.includes(".git/")) files.push(match.replaceAll("\\", "/"))
+            if (!match.includes("node_modules/") && !match.includes(".git/")) {
+              try { files.push(resolveUnprotectedProjectPath(options.root, match).rel) } catch { /* Skip protected and escaping links. */ }
+            }
             if (files.length >= 200) break
           }
           const output = files.join("\n") || "No files found."
@@ -245,8 +252,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       execute: async ({ query, pattern }) => {
         const event = toolID(); emitTool({ id: event, tool: "grep", state: "running", title: "Search " + query })
         try {
-          assertModeTool(options.mode, "grep")
-          if (permissionFor(options.permissions, { tool: "grep", target: query }) === "deny") throw new Error("grep is blocked by project policy.")
+          await approve("grep", "Search " + query, "Search text in project files.", undefined, query)
           const regex = new RegExp(query, "i")
           const matches: string[] = []
           let seen = 0
@@ -275,14 +281,15 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       execute: async ({ path, content }) => {
         const event = toolID()
         try {
-          const target = relativePath(options.root, path)
-          const before = existsSync(target.full) ? readFileSync(target.full, "utf8") : ""
+          const target = resolveUnprotectedProjectPath(options.root, path)
+          const beforeExists = existsSync(target.full)
+          const before = beforeExists ? readFileSync(target.full, "utf8") : ""
           const diff = fileDiff(target.rel, before, content)
           emitTool({ id: event, tool: "write", state: "running", title: "Write " + target.rel, path: target.rel, diff })
           await approve("write", "Write " + target.rel, "Create or replace this project file.", diff, target.rel)
           mkdirSync(dirname(target.full), { recursive: true })
           writeFileSync(target.full, content, "utf8")
-          options.onFileChange?.({ path: target.rel, before, after: content })
+          options.onFileChange?.({ path: target.rel, before, after: content, beforeExists, afterExists: true })
           emitTool({ id: event, tool: "write", state: "completed", title: "Wrote " + target.rel, path: target.rel, diff })
           return "Wrote " + target.rel
         } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "write", state: "rejected", title: "Write " + path, detail: message }); return "Error: " + message }
@@ -294,7 +301,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       execute: async ({ path, oldText, newText }) => {
         const event = toolID()
         try {
-          const target = relativePath(options.root, path)
+          const target = resolveUnprotectedProjectPath(options.root, path)
           const before = readFileSync(target.full, "utf8")
           if (!before.includes(oldText)) throw new Error("The requested text was not found; no file was changed.")
           const after = before.replace(oldText, newText)
@@ -302,7 +309,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           emitTool({ id: event, tool: "edit", state: "running", title: "Edit " + target.rel, path: target.rel, diff })
           await approve("edit", "Edit " + target.rel, "Apply this exact text replacement.", diff, target.rel)
           writeFileSync(target.full, after, "utf8")
-          options.onFileChange?.({ path: target.rel, before, after })
+          options.onFileChange?.({ path: target.rel, before, after, beforeExists: true, afterExists: true })
           emitTool({ id: event, tool: "edit", state: "completed", title: "Edited " + target.rel, path: target.rel, diff })
           return "Edited " + target.rel
         } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "edit", state: "rejected", title: "Edit " + path, detail: message }); return "Error: " + message }
@@ -316,30 +323,34 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         try {
           const paths = patchPaths(options.root, patch)
           const before = new Map(paths.map((path) => {
-            const target = relativePath(options.root, path)
-            return [path, existsSync(target.full) ? readFileSync(target.full, "utf8") : ""] as const
+            const target = resolveUnprotectedProjectPath(options.root, path)
+            const existed = existsSync(target.full)
+            return [path, { content: existed ? readFileSync(target.full, "utf8") : "", existed }] as const
           }))
           emitTool({ id: event, tool: "apply_patch", state: "running", title: "Apply patch to " + paths.join(", "), detail: paths.join(", "), diff: clip(patch, 12_000) })
           await approve("apply_patch", "Apply patch", "Update " + paths.join(", "), clip(patch, 12_000), paths.join(", "))
           await applyUnifiedPatch(options.root, patch)
-          for (const path of paths) {
-            const target = relativePath(options.root, path)
-            const after = existsSync(target.full) ? readFileSync(target.full, "utf8") : ""
-            options.onFileChange?.({ path, before: before.get(path) || "", after })
-          }
+          const changes = paths.map((path) => {
+            const target = resolveUnprotectedProjectPath(options.root, path)
+            const afterExists = existsSync(target.full)
+            const prior = before.get(path)!
+            return { path, before: prior.content, after: afterExists ? readFileSync(target.full, "utf8") : "", beforeExists: prior.existed, afterExists }
+          })
+          if (options.onFileChanges) options.onFileChanges(changes)
+          else for (const change of changes) options.onFileChange?.(change)
           emitTool({ id: event, tool: "apply_patch", state: "completed", title: "Applied patch", detail: paths.join(", "), diff: clip(patch, 12_000) })
           return "Applied patch to " + paths.join(", ")
         } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "apply_patch", state: "rejected", title: "Apply patch", detail: message }); return "Error: " + message }
       },
     }),
     bash: tool({
-      description: "Run a shell command in the current project. The user must approve every command.",
+      description: "Run a bounded shell command in the current project. Shell filesystem changes are not included in NIMBL's file-edit undo history.",
       inputSchema: z.object({ command: z.string().describe("Command to execute in the project directory") }),
       execute: async ({ command }) => {
         const event = toolID(); emitTool({ id: event, tool: "bash", state: "running", title: "Run command", detail: command })
         try {
           await approve("bash", "Run command", command, undefined, command)
-          const result = await shell(command, options.root, options.abortSignal)
+          const result = await runShellCommand(command, options.root, { signal: options.abortSignal })
           const state = result.code === 0 ? "completed" : "failed"
           emitTool({ id: event, tool: "bash", state, title: "Command exited " + result.code, detail: command, output: result.output })
           return "Exit code " + result.code + "\n" + result.output
@@ -368,9 +379,8 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       execute: async ({ name }) => {
         const event = toolID(); emitTool({ id: event, tool: "skill", state: "running", title: "Load skill " + name })
         try {
-          assertModeTool(options.mode, "skill")
           const file = skillFile(options.root, name)
-          if (permissionFor(options.permissions, { tool: "skill", target: name }) === "deny") throw new Error("skill is blocked by project policy.")
+          await approve("skill", "Load skill " + name, "Read this project-local skill.", undefined, name)
           if (!existsSync(file)) throw new Error(`No project skill named "${name}".`)
           const output = clip(readFileSync(file, "utf8"), 16_000)
           emitTool({ id: event, tool: "skill", state: "completed", title: "Loaded skill " + name, output })
@@ -382,10 +392,13 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       description: "Record a short task checklist for this run. Use for multi-step work and keep statuses current.",
       inputSchema: z.object({ items: z.array(z.object({ content: z.string().min(1), status: z.enum(["pending", "in_progress", "completed"]) })).min(1).max(12) }),
       execute: async ({ items }) => {
-        assertModeTool(options.mode, "todowrite")
-        const event = toolID(); const output = items.map((item) => `${item.status === "completed" ? "[x]" : item.status === "in_progress" ? "[>]" : "[ ]"} ${item.content}`).join("\n")
-        emitTool({ id: event, tool: "todowrite", state: "completed", title: "Updated task list", output })
-        return output
+        const event = toolID()
+        try {
+          await approve("todowrite", "Update task list", "Record the task checklist for this run.", undefined, "task list")
+          const output = items.map((item) => `${item.status === "completed" ? "[x]" : item.status === "in_progress" ? "[>]" : "[ ]"} ${item.content}`).join("\n")
+          emitTool({ id: event, tool: "todowrite", state: "completed", title: "Updated task list", output })
+          return output
+        } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "todowrite", state: "rejected", title: "Update task list", detail: message }); return "Error: " + message }
       },
     }),
     question: tool({
@@ -412,6 +425,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   const selectedContext = await selectProjectContextWithBudget(options.root, options.messages.at(-1)?.text || "", 12, contextBudgetChars)
   const system = [
     "You are NIMBL, a token-efficient coding companion. Work inside the current project using tools before making claims about its code.",
+    ASSISTANT_RESPONSE_STYLE,
     modePrompt(options.mode),
     "Use read, glob, grep, and project-local skills selectively. Keep tool output focused. Use todowrite for multi-step work. Use question only when a user decision is necessary. Use edit for focused changes, write for new or whole-file content, and apply_patch only for a valid unified diff.",
     "Current permission policy: " + ["read", "glob", "grep", "edit", "write", "bash", "webfetch", "skill", "question"].map((name) => `${name}=${permissionExplanation(options.permissions, { tool: name })}`).join(", "),
@@ -421,15 +435,33 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     selectedContext.items.length ? `Relevant project context (${selectedContext.estimatedTokens} estimated tokens${selectedContext.cacheHit ? ", cache hit" : ""}; selected locally to reduce token use):\n` + selectedContext.items.map((item) => `# ${item.path} — ${item.reason}\n${item.excerpt}`).join("\n\n") : "",
   ].filter(Boolean).join("\n\n")
 
-  const result = streamText({ model: createModel(options), system, messages: history as any, tools, stopWhen: stepCountIs(MAX_TOOL_STEPS), abortSignal: options.abortSignal })
   let text = ""
   let reasoning = ""
-  for await (const part of result.fullStream) {
-    if (part.type === "text-delta") { text += part.text; options.onEvent({ kind: "text", delta: part.text }) }
-    if (part.type === "reasoning-delta") { reasoning += part.text; options.onEvent({ kind: "reasoning", delta: part.text }) }
+  const availableTools = Object.fromEntries(Object.entries(tools).filter(([name]) => MODE_TOOLS[options.mode].includes(name as PermissionRequest["tool"])))
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    attemptActivity = false
+    try {
+      const result = streamText({ model: createModel(options), system, messages: history as any, tools: availableTools, stopWhen: stepCountIs(MAX_TOOL_STEPS), abortSignal: options.abortSignal })
+      for await (const part of result.fullStream) {
+        if (part.type === "text-delta") {
+          const delta = stripEmojis(part.text)
+          if (delta) { attemptActivity = true; text += delta; options.onEvent({ kind: "text", delta }) }
+        }
+        if (part.type === "reasoning-delta") {
+          const delta = stripEmojis(part.text)
+          if (delta) { attemptActivity = true; reasoning += delta; options.onEvent({ kind: "reasoning", delta }) }
+        }
+      }
+      const usage = await result.usage
+      return { text, reasoning, usage: { inputTokens: usage.inputTokens || 0, outputTokens: usage.outputTokens || 0, totalTokens: usage.totalTokens || 0 } }
+    } catch (error) {
+      if (attemptActivity || attempt === MAX_ATTEMPTS || options.abortSignal?.aborted || !retryable(error)) throw error
+      const message = error instanceof Error ? error.message : String(error)
+      options.onRetry?.({ attempt: attempt + 1, message })
+      await wait((options.retryDelayMs ?? 500) * 2 ** (attempt - 1), options.abortSignal)
+    }
   }
-  const usage = await result.usage
-  return { text, reasoning, usage: { inputTokens: usage.inputTokens || 0, outputTokens: usage.outputTokens || 0, totalTokens: usage.totalTokens || 0 } }
+  throw new Error("Agent execution failed.")
 }
 
 export function contextEstimate(messages: AgentMessage[], summary = "") {

@@ -1,5 +1,5 @@
 import { TextAttributes, type BoxRenderable, type ScrollBoxRenderable } from "@opentui/core"
-import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
 import { SplitBorder, setBorder } from "./border"
 import { NativeDiff } from "./native"
@@ -16,12 +16,21 @@ export interface PermissionPromptProps {
   onOnce: () => void
   onAlways: () => void
   onReject: () => void
+  disabled?: boolean
+  contentWidth?: number
 }
 
 export function PermissionPrompt(props: PermissionPromptProps) {
   const dimensions = useTerminalDimensions()
+  const renderer = useRenderer()
+
+  function click(action: () => void) {
+    if (renderer.getSelection()?.getSelectedText()) return
+    action()
+  }
 
   useKeyboard((event) => {
+    if (props.disabled) return
     const key = keyName(event)
     if (key === "return" || key === "enter") {
       event.preventDefault()
@@ -79,7 +88,7 @@ export function PermissionPrompt(props: PermissionPromptProps) {
                 }
               }}
             >
-              <NativeDiff diff={diff()} />
+              <NativeDiff diff={diff()} width={props.contentWidth} />
             </scrollbox>
           )}
         </Show>
@@ -97,13 +106,13 @@ export function PermissionPrompt(props: PermissionPromptProps) {
         alignItems={dimensions().width < 80 ? "flex-start" : "center"}
       >
         <box flexDirection="row" gap={1} flexShrink={0}>
-          <box paddingLeft={1} paddingRight={1} backgroundColor={theme.warning} onMouseUp={props.onOnce}>
+          <box paddingLeft={1} paddingRight={1} backgroundColor={theme.warning} onMouseUp={() => click(props.onOnce)}>
             <text fg={theme.selectedListItemText}>Allow once</text>
           </box>
-          <box paddingLeft={1} paddingRight={1} backgroundColor={theme.backgroundMenu} onMouseUp={props.onAlways}>
+          <box paddingLeft={1} paddingRight={1} backgroundColor={theme.backgroundMenu} onMouseUp={() => click(props.onAlways)}>
             <text fg={theme.textMuted}>Allow always</text>
           </box>
-          <box paddingLeft={1} paddingRight={1} backgroundColor={theme.backgroundMenu} onMouseUp={props.onReject}>
+          <box paddingLeft={1} paddingRight={1} backgroundColor={theme.backgroundMenu} onMouseUp={() => click(props.onReject)}>
             <text fg={theme.textMuted}>Reject</text>
           </box>
         </box>
@@ -128,10 +137,13 @@ export interface QuestionPromptProps {
   options: string[]
   onAnswer: (answer: string) => void
   onCancel?: () => void
+  disabled?: boolean
 }
 
 export function QuestionPrompt(props: QuestionPromptProps) {
+  const renderer = useRenderer()
   const [selected, setSelected] = createSignal(0)
+  const [mouseActive, setMouseActive] = createSignal(false)
   const count = createMemo(() => props.options.length)
 
   createEffect(() => {
@@ -150,6 +162,8 @@ export function QuestionPrompt(props: QuestionPromptProps) {
   }
 
   useKeyboard((event) => {
+    if (props.disabled) return
+    setMouseActive(false)
     const key = keyName(event)
     if ((key === "up" || key === "arrowup") && count()) {
       event.preventDefault()
@@ -195,9 +209,13 @@ export function QuestionPrompt(props: QuestionPromptProps) {
               const active = () => index() === selected()
               return (
                 <box
-                  onMouseOver={() => setSelected(index())}
-                  onMouseDown={() => setSelected(index())}
-                  onMouseUp={() => choose(index())}
+                  onMouseMove={() => setMouseActive(true)}
+                  onMouseOver={() => mouseActive() && setSelected(index())}
+                  onMouseDown={() => { setMouseActive(true); setSelected(index()) }}
+                  onMouseUp={() => {
+                    if (renderer.getSelection()?.getSelectedText()) return
+                    choose(index())
+                  }}
                 >
                   <box flexDirection="row">
                     <box backgroundColor={active() ? theme.backgroundElement : undefined} paddingRight={1}>

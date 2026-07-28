@@ -1,7 +1,8 @@
 import { RGBA, TextAttributes, type BoxRenderable, type ScrollBoxRenderable } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { For, Show, createEffect, createMemo, createSignal, type JSX } from "solid-js"
+import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
 import { Dynamic } from "solid-js/web"
+import { stripEmojis } from "@/core/response-style"
 import { SplitBorder, setBorder } from "./border"
 import { PermissionPrompt, QuestionPrompt } from "./docked-prompts"
 import { NativeDiff, NativeMarkdown } from "./native"
@@ -12,6 +13,8 @@ import { agentColor, theme } from "./theme"
 import type { AgentMode, AssistantPart, ChatMessage, ChatSession, CommandOption, SessionPromptRef } from "./types"
 
 type ToolPart = Extract<AssistantPart, { type: "tool" }>
+type TextPart = Extract<AssistantPart, { type: "text" }>
+type ReasoningPart = Extract<AssistantPart, { type: "reasoning" }>
 
 export interface SessionScreenProps {
   session: ChatSession
@@ -28,6 +31,8 @@ export interface SessionScreenProps {
   onMessageAction(id: string): void
   focusMessageID?: string
   sidebarVisible: boolean
+  contentWidth?: number
+  keyboardDisabled?: boolean
   contextText?: string
   cost: number
   pendingApproval?: { title: string; detail: string; diff?: string }
@@ -96,12 +101,11 @@ function hasSelection(renderer: ReturnType<typeof useRenderer>): boolean {
   return Boolean(renderer.getSelection()?.getSelectedText())
 }
 
-function OutputPreview(props: { output: string; maxLines: number; color?: string }) {
-  const dimensions = useTerminalDimensions()
+function OutputPreview(props: { output: string; maxLines: number; width: number; color?: string }) {
   const renderer = useRenderer()
   const [expanded, setExpanded] = createSignal(false)
   const collapsed = createMemo(() =>
-    collapseToolOutput(stripAnsi(props.output.trim()), props.maxLines, props.maxLines * Math.max(20, dimensions().width - 6)),
+    collapseToolOutput(stripAnsi(props.output.trim()), props.maxLines, props.maxLines * Math.max(20, props.width - 6)),
   )
   const visible = createMemo(() => (expanded() || !collapsed().overflow ? stripAnsi(props.output.trim()) : collapsed().output))
 
@@ -239,10 +243,10 @@ export function BlockTool(props: BlockToolProps) {
   )
 }
 
-function DiffView(props: { diff: string; path?: string }) {
+function DiffView(props: { diff: string; path?: string; width: number }) {
   return (
     <box paddingLeft={1}>
-      <NativeDiff diff={props.diff} filetype={filetype(props.path)} />
+      <NativeDiff diff={props.diff} filetype={filetype(props.path)} width={props.width} />
     </box>
   )
 }
@@ -256,7 +260,7 @@ function toolText(part: ToolPart, verb?: string): string {
   return `${prefix}${target}${detail}`.trim()
 }
 
-function ToolPartView(props: { part: ToolPart }) {
+function ToolPartView(props: { part: ToolPart; width: number }) {
   const tool = createMemo(() => canonicalTool(props.part.tool))
   const output = () => props.part.output?.trim()
 
@@ -269,7 +273,7 @@ function ToolPartView(props: { part: ToolPart }) {
               <BlockTool part={props.part} title={props.part.path ? `# Running in ${props.part.path}` : undefined}>
                 <box gap={1}>
                   <text fg={theme.text}>$ {props.part.detail ?? props.part.title}</text>
-                  <OutputPreview output={output()!} maxLines={10} />
+                  <OutputPreview output={output()!} maxLines={10} width={props.width} />
                 </box>
               </BlockTool>
             )
@@ -310,9 +314,9 @@ function ToolPartView(props: { part: ToolPart }) {
             return (
               <BlockTool part={props.part} title={`# Wrote ${props.part.path ?? props.part.title}`}>
                 {props.part.diff ? (
-                  <DiffView diff={props.part.diff} path={props.part.path} />
+                  <DiffView diff={props.part.diff} path={props.part.path} width={props.width} />
                 ) : (
-                  <OutputPreview output={output()!} maxLines={10} />
+                  <OutputPreview output={output()!} maxLines={10} width={props.width} />
                 )}
               </BlockTool>
             )
@@ -331,7 +335,7 @@ function ToolPartView(props: { part: ToolPart }) {
                 part={props.part}
                 title={`${name === "edit" ? "← Edit" : "← Patched"} ${props.part.path ?? props.part.title}`}
               >
-                <DiffView diff={props.part.diff} path={props.part.path} />
+                <DiffView diff={props.part.diff} path={props.part.path} width={props.width} />
               </BlockTool>
             )
           }
@@ -354,7 +358,7 @@ function ToolPartView(props: { part: ToolPart }) {
           if (output()) {
             return (
               <BlockTool part={props.part} title="# Todos">
-                <OutputPreview output={output()!} maxLines={10} color={theme.textMuted} />
+                <OutputPreview output={output()!} maxLines={10} width={props.width} color={theme.textMuted} />
               </BlockTool>
             )
           }
@@ -369,7 +373,7 @@ function ToolPartView(props: { part: ToolPart }) {
           if (output()) {
             return (
               <BlockTool part={props.part} title="# Questions">
-                <OutputPreview output={output()!} maxLines={10} />
+                <OutputPreview output={output()!} maxLines={10} width={props.width} />
               </BlockTool>
             )
           }
@@ -391,7 +395,7 @@ function ToolPartView(props: { part: ToolPart }) {
         if (output()) {
           return (
             <BlockTool part={props.part} title={`# ${props.part.tool} ${props.part.title}`}>
-              <OutputPreview output={output()!} maxLines={3} />
+              <OutputPreview output={output()!} maxLines={3} width={props.width} />
             </BlockTool>
           )
         }
@@ -407,7 +411,7 @@ function ToolPartView(props: { part: ToolPart }) {
 }
 
 function reasoningSummary(value: string): string {
-  const line = value
+  const line = stripEmojis(value)
     .replace(/\[REDACTED\]/g, "")
     .split("\n")
     .map((item) => item.replace(/^#+\s*/, "").trim())
@@ -442,7 +446,7 @@ function ReasoningPartView(props: { part: Extract<AssistantPart, { type: "reason
         </box>
         <Show when={expanded()}>
           <box paddingLeft={2} marginTop={1}>
-            <NativeMarkdown content={props.part.text.trim()} color={theme.textMuted} />
+            <NativeMarkdown content={stripEmojis(props.part.text.trim())} color={theme.textMuted} />
           </box>
         </Show>
       </box>
@@ -454,7 +458,7 @@ function AssistantTextPart(props: { text: string }) {
   return (
     <Show when={props.text.trim()}>
       <box paddingLeft={3} marginTop={1} flexShrink={0}>
-        <NativeMarkdown content={props.text.trim()} />
+        <NativeMarkdown content={stripEmojis(props.text.trim())} />
       </box>
     </Show>
   )
@@ -514,7 +518,7 @@ function UserMessage(props: {
   )
 }
 
-function AssistantMessage(props: { message: ChatMessage; fallbackAgent: AgentMode; fallbackModel: string }) {
+function AssistantMessage(props: { message: ChatMessage; fallbackAgent: AgentMode; fallbackModel: string; width: number }) {
   const parts = createMemo<AssistantPart[]>(() => {
     if (props.message.parts?.length) return props.message.parts
     if (!props.message.text) return []
@@ -527,13 +531,13 @@ function AssistantMessage(props: { message: ChatMessage; fallbackAgent: AgentMod
 
   return (
     <>
-      <For each={parts()}>
+      <Index each={parts()}>
         {(part) => {
-          if (part.type === "text") return <AssistantTextPart text={part.text} />
-          if (part.type === "reasoning") return <ReasoningPartView part={part} />
-          return <ToolPartView part={part} />
+          if (part().type === "text") return <AssistantTextPart text={(part() as TextPart).text} />
+          if (part().type === "reasoning") return <ReasoningPartView part={part() as ReasoningPart} />
+          return <ToolPartView part={part() as ToolPart} width={props.width} />
         }}
-      </For>
+      </Index>
       <Show when={props.message.error}>
         {(error) => (
           <box
@@ -598,6 +602,8 @@ function ApprovalDock(props: { screen: SessionScreenProps }) {
       title={approval().title}
       detail={approval().detail}
       diff={approval().diff}
+      disabled={props.screen.keyboardDisabled}
+      contentWidth={props.screen.contentWidth}
       onOnce={() => props.screen.onApproval?.("once")}
       onAlways={() => props.screen.onApproval?.("always")}
       onReject={() => props.screen.onApproval?.("reject")}
@@ -611,6 +617,7 @@ function QuestionDock(props: { screen: SessionScreenProps }) {
     <QuestionPrompt
       prompt={question().prompt}
       options={question().options}
+      disabled={props.screen.keyboardDisabled}
       onAnswer={(answer) => props.screen.onQuestion?.(answer)}
       onCancel={() => props.screen.onQuestion?.("Skipped by user")}
     />
@@ -632,6 +639,7 @@ function ComposerDock(props: { screen: SessionScreenProps }) {
       cwd={props.screen.cwd}
       status={props.screen.loading ? "busy" : "idle"}
       context={props.screen.contextText}
+      disabled={props.screen.keyboardDisabled}
       ref={props.screen.promptRef}
     />
   )
@@ -649,12 +657,16 @@ function SessionDock(props: { screen: SessionScreenProps }) {
 export function SessionScreen(props: SessionScreenProps) {
   const dimensions = useTerminalDimensions()
   let scroll: ScrollBoxRenderable | undefined
+  let scrollTimer: ReturnType<typeof setTimeout> | undefined
+  let previousSessionID = props.session.id
+  let previousMessageCount = props.session.messages.length
   const wide = createMemo(() => dimensions().width > 120)
   const visibleMessages = createMemo(() => props.session.messages.filter((message) => !message.hidden))
   const waiting = createMemo(() => {
     if (!props.loading) return false
     const last = visibleMessages().at(-1)
-    return !last || (last.role === "assistant" && !last.text && !last.parts?.length)
+    if (!last || last.role !== "assistant") return true
+    return last.completed !== undefined || (!last.text && !last.parts?.length)
   })
 
   createEffect(() => {
@@ -662,30 +674,60 @@ export function SessionScreen(props: SessionScreenProps) {
     if (messageID) queueMicrotask(() => scroll?.scrollChildIntoView(messageID))
   })
 
+  createEffect(() => {
+    const sessionID = props.session.id
+    const count = props.session.messages.length
+    const shouldScroll = sessionID !== previousSessionID || count > previousMessageCount
+    previousSessionID = sessionID
+    previousMessageCount = count
+    if (!shouldScroll) return
+    if (scrollTimer) clearTimeout(scrollTimer)
+    scrollTimer = setTimeout(() => {
+      scrollTimer = undefined
+      if (!scroll || scroll.isDestroyed) return
+      scroll.scrollTo(scroll.scrollHeight)
+    }, 50)
+  })
+
+  onCleanup(() => {
+    if (scrollTimer) clearTimeout(scrollTimer)
+  })
+
   return (
     <box flexDirection="row" flexGrow={1} minHeight={0} width="100%" height="100%" backgroundColor={theme.background}>
       <box flexGrow={1} minHeight={0} paddingBottom={1} paddingLeft={2} paddingRight={2} gap={1}>
         <scrollbox ref={(value: ScrollBoxRenderable) => { scroll = value }} stickyScroll={true} stickyStart="bottom" flexGrow={1}>
           <box height={1} />
-          <For each={visibleMessages()}>
-            {(message, index) => {
-              if (message.role === "user") {
-                return (
-                <UserMessage
-                  message={message}
-                  index={index()}
-                  fallbackAgent={props.session.agent}
-                  onAction={props.onMessageAction}
-                />
-                )
-              }
-              if (message.role === "assistant") {
-                return <AssistantMessage message={message} fallbackAgent={props.session.agent} fallbackModel={props.model} />
-              }
-              if (message.role === "error") return <ErrorMessage message={message} index={index()} />
-              return <SystemMessage message={message} />
-            }}
-          </For>
+          <Show keyed when={props.session.id}>
+            {(_sessionID) => (
+              <Index each={visibleMessages()}>
+                {(message, index) => {
+                  if (message().role === "user") {
+                    return (
+                      <UserMessage
+                        message={message()}
+                        index={index}
+                        fallbackAgent={props.session.agent}
+                        onAction={props.onMessageAction}
+                      />
+                    )
+                  }
+                  if (message().role === "assistant") {
+                    return (
+                      <AssistantMessage
+                        message={message()}
+                        fallbackAgent={props.session.agent}
+                        fallbackModel={props.model}
+                        width={props.contentWidth ?? Math.max(20, dimensions().width - 4)}
+                      />
+                    )
+                  }
+                  if (message().role === "error") return <ErrorMessage message={message()} index={index} />
+                  return <SystemMessage message={message()} />
+                }}
+              </Index>
+            )}
+          </Show>
           <Show when={waiting()}>
             <box paddingLeft={3} marginTop={1}>
               <Spinner color={agentColor(props.session.agent)}>Working...</Spinner>

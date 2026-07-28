@@ -1,8 +1,11 @@
 import type { AgentMode } from "./types"
 
+const NIMBL_FOREGROUND = "#4ade80"
+
 // OpenCode's dark semantic theme with NIMBL green as the primary accent.
 export const theme = {
   primary: "#06402b",
+  primaryForeground: NIMBL_FOREGROUND,
   secondary: "#5c9cf5",
   accent: "#9d7cd8",
   error: "#e06c75",
@@ -35,22 +38,22 @@ export const theme = {
 
   markdownText: "#eeeeee",
   markdownHeading: "#9d7cd8",
-  markdownLink: "#06402b",
+  markdownLink: NIMBL_FOREGROUND,
   markdownLinkText: "#56b6c2",
   markdownCode: "#7fd88f",
   markdownBlockQuote: "#e5c07b",
   markdownEmph: "#e5c07b",
   markdownStrong: "#f5a742",
   markdownHorizontalRule: "#808080",
-  markdownListItem: "#06402b",
+  markdownListItem: NIMBL_FOREGROUND,
   markdownListEnumeration: "#56b6c2",
-  markdownImage: "#06402b",
+  markdownImage: NIMBL_FOREGROUND,
   markdownImageText: "#56b6c2",
   markdownCodeBlock: "#eeeeee",
 
   syntaxComment: "#808080",
   syntaxKeyword: "#9d7cd8",
-  syntaxFunction: "#06402b",
+  syntaxFunction: NIMBL_FOREGROUND,
   syntaxVariable: "#e06c75",
   syntaxString: "#7fd88f",
   syntaxNumber: "#f5a742",

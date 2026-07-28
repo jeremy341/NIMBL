@@ -48,45 +48,44 @@ export function DialogOverlay(props: ParentProps<DialogOverlayProps>) {
   }
 
   return (
-    <box position="absolute" zIndex={3000}>
-      <Show when={props.open}>
+    <Show when={props.open}>
+      <box
+        id="dialog-backdrop"
+        onMouseDown={() => {
+          dismiss = Boolean(renderer.getSelection())
+        }}
+        onMouseUp={() => {
+          if (dismiss) {
+            dismiss = false
+            return
+          }
+          props.onClose()
+        }}
+        width={dimensions().width}
+        height={dimensions().height}
+        alignItems="center"
+        position="absolute"
+        zIndex={3000}
+        paddingTop={dimensions().height / 4}
+        left={0}
+        top={0}
+        backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
+      >
         <box
-          onMouseDown={() => {
-            dismiss = Boolean(renderer.getSelection())
+          onMouseUp={(event: any) => {
+            if (renderer.getSelection()?.getSelectedText()) return
+            dismiss = false
+            event.stopPropagation()
           }}
-          onMouseUp={() => {
-            if (dismiss) {
-              dismiss = false
-              return
-            }
-            props.onClose()
-          }}
-          width={dimensions().width}
-          height={dimensions().height}
-          alignItems="center"
-          position="absolute"
-          zIndex={3000}
-          paddingTop={dimensions().height / 4}
-          left={0}
-          top={0}
-          backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
+          width={width()}
+          maxWidth={dimensions().width - 2}
+          backgroundColor={theme.backgroundPanel}
+          paddingTop={1}
         >
-          <box
-            onMouseUp={(event: any) => {
-              if (renderer.getSelection()?.getSelectedText()) return
-              dismiss = false
-              event.stopPropagation()
-            }}
-            width={width()}
-            maxWidth={dimensions().width - 2}
-            backgroundColor={theme.backgroundPanel}
-            paddingTop={1}
-          >
-            {props.children}
-          </box>
+          {props.children}
         </box>
-      </Show>
-    </box>
+      </box>
+    </Show>
   )
 }
 
@@ -100,12 +99,18 @@ export interface SelectDialogProps {
   renderFilter?: boolean
   flat?: boolean
   showSuggested?: boolean
+  preserveSelection?: boolean
   onMove?: (value: string, option: CommandOption) => void
+  actions?: Array<{
+    key: string
+    title: string
+    onTrigger: (value: string, option: CommandOption) => void
+  }>
 }
 
 function matches(option: CommandOption, query: string): boolean {
   if (!query) return true
-  const haystack = [option.title, option.value, option.description, option.category].filter(Boolean).join(" ").toLowerCase()
+  const haystack = [option.title, option.value, ...(option.aliases ?? []), option.description, option.category].filter(Boolean).join(" ").toLowerCase()
   if (haystack.includes(query)) return true
   let cursor = 0
   for (const character of haystack) {
@@ -115,12 +120,25 @@ function matches(option: CommandOption, query: string): boolean {
   return false
 }
 
+function matchesShortcut(event: any, shortcut: string) {
+  const parts = shortcut.toLowerCase().split("+")
+  return eventName(event) === parts.at(-1)
+    && Boolean(event.ctrl) === parts.includes("ctrl")
+    && Boolean(event.shift) === parts.includes("shift")
+    && Boolean(event.meta) === parts.includes("alt")
+}
+
 export function SelectDialog(props: SelectDialogProps) {
   const dimensions = useTerminalDimensions()
+  const renderer = useRenderer()
   const [query, setQuery] = createSignal("")
+  const [mouseActive, setMouseActive] = createSignal(false)
   const initialCurrent = props.options.findIndex((option) => option.current)
   const suggestedOffset = props.showSuggested ? props.options.filter((option) => option.suggested).length : 0
   const [selected, setSelected] = createSignal(initialCurrent >= 0 ? initialCurrent + suggestedOffset : 0)
+  const [selectedValue, setSelectedValue] = createSignal(
+    initialCurrent >= 0 ? props.options[initialCurrent]?.value : props.options[0]?.value,
+  )
   let input: InputRenderable | undefined
   let scroll: ScrollBoxRenderable | undefined
 
@@ -163,9 +181,13 @@ export function SelectDialog(props: SelectDialogProps) {
   createEffect(() => {
     const options = filtered()
     const current = query().trim() ? -1 : options.findIndex((option) => option.current)
-    const index = current >= 0 ? current : 0
+    const preserved = props.preserveSelection
+      ? options.findIndex((option) => option.value === selectedValue())
+      : -1
+    const index = preserved >= 0 ? preserved : current >= 0 ? current : 0
     setSelected(index)
     const option = options[index]
+    setSelectedValue(option?.value)
     if (option) props.onMove?.(option.value, option)
     queueMicrotask(scrollToSelection)
   })
@@ -180,7 +202,10 @@ export function SelectDialog(props: SelectDialogProps) {
     const wrapped = (next + count) % count
     setSelected(wrapped)
     const option = filtered()[wrapped]
-    if (option) props.onMove?.(option.value, option)
+    if (option) {
+      setSelectedValue(option.value)
+      props.onMove?.(option.value, option)
+    }
     scrollToSelection()
   }
 
@@ -190,6 +215,15 @@ export function SelectDialog(props: SelectDialogProps) {
   }
 
   function onKeyDown(event: any) {
+    setMouseActive(false)
+    const action = props.actions?.find((item) => matchesShortcut(event, item.key))
+    const option = filtered()[selected()]
+    if (action && option) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      action.onTrigger(option.value, option)
+      return
+    }
     if (isKey(event, "escape", "esc")) {
       event.preventDefault?.()
       event.stopPropagation?.()
@@ -198,26 +232,31 @@ export function SelectDialog(props: SelectDialogProps) {
     }
     if (isKey(event, "down", "arrowdown")) {
       event.preventDefault?.()
+      event.stopPropagation?.()
       move(selected() + 1)
       return
     }
     if (isKey(event, "up", "arrowup")) {
       event.preventDefault?.()
+      event.stopPropagation?.()
       move(selected() - 1)
       return
     }
     if (isKey(event, "home")) {
       event.preventDefault?.()
+      event.stopPropagation?.()
       move(0)
       return
     }
     if (isKey(event, "end")) {
       event.preventDefault?.()
+      event.stopPropagation?.()
       move(filtered().length - 1)
       return
     }
     if (isKey(event, "return", "enter")) {
       event.preventDefault?.()
+      event.stopPropagation?.()
       choose()
     }
   }
@@ -245,11 +284,11 @@ export function SelectDialog(props: SelectDialogProps) {
                 input = value
               }}
               value={query()}
-              onInput={setQuery}
+              onInput={(value: string) => { setMouseActive(false); setQuery(value) }}
               onKeyDown={onKeyDown}
               focusedBackgroundColor={theme.backgroundPanel}
               backgroundColor={theme.backgroundPanel}
-              cursorColor={theme.primary}
+              cursorColor={theme.primaryForeground}
               textColor={theme.textMuted}
               focusedTextColor={theme.textMuted}
               placeholder="Search"
@@ -296,13 +335,16 @@ export function SelectDialog(props: SelectDialogProps) {
                           id={`select-option-${index}`}
                           flexDirection="column"
                           position="relative"
-                          onMouseOver={() => move(index)}
+                          onMouseMove={() => setMouseActive(true)}
+                          onMouseOver={() => mouseActive() && move(index)}
                           onMouseDown={(event: any) => {
                             event.stopPropagation?.()
+                            setMouseActive(true)
                             move(index)
                           }}
                           onMouseUp={(event: any) => {
                             event.stopPropagation?.()
+                            if (renderer.getSelection()?.getSelectedText()) return
                             choose(index)
                           }}
                         >
@@ -314,7 +356,7 @@ export function SelectDialog(props: SelectDialogProps) {
                             backgroundColor={active() ? theme.primary : undefined}
                           >
                             <Show when={option.current && !option.gutter && !option.connected}>
-                              <text flexShrink={0} fg={active() ? theme.selectedListItemText : theme.primary} marginRight={0}>
+                              <text flexShrink={0} fg={active() ? theme.selectedListItemText : theme.primaryForeground} marginRight={0}>
                                 ●
                               </text>
                             </Show>
@@ -327,7 +369,7 @@ export function SelectDialog(props: SelectDialogProps) {
                               flexGrow={1}
                               overflow="hidden"
                               wrapMode="none"
-                              fg={active() ? theme.selectedListItemText : option.current ? theme.primary : theme.text}
+                              fg={active() ? theme.selectedListItemText : option.current ? theme.primaryForeground : theme.text}
                               attributes={active() ? TextAttributes.BOLD : undefined}
                               paddingLeft={3}
                             >
@@ -365,9 +407,18 @@ export function SelectDialog(props: SelectDialogProps) {
           </scrollbox>
         </Show>
       </box>
-      <Show when={props.footer || props.footerRight} fallback={<box flexShrink={0} />}>
+      <Show when={props.footer || props.footerRight || props.actions?.length} fallback={<box flexShrink={0} />}>
         <box paddingRight={2} paddingLeft={4} flexDirection="row" justifyContent="space-between" flexShrink={0}>
-          <box flexDirection="row" gap={2}>{props.footer}</box>
+          <box flexDirection="row" gap={2}>
+            <For each={props.actions}>
+              {(action) => (
+                <text fg={theme.text}>
+                  {action.key} <span style={{ fg: theme.textMuted }}>{action.title}</span>
+                </text>
+              )}
+            </For>
+            {props.footer}
+          </box>
           <box flexDirection="row" gap={2}>{props.footerRight}</box>
         </box>
       </Show>
@@ -398,9 +449,14 @@ export interface DetailDialogProps {
 }
 
 export function DetailDialog(props: DetailDialogProps) {
+  const dimensions = useTerminalDimensions()
+  const contentHeight = () =>
+    Math.max(1, dimensions().height - Math.ceil(dimensions().height / 4) - (props.footer ? 6 : 4))
+
   useKeyboard((event) => {
     if (!isKey(event, "escape", "esc")) return
     event.preventDefault()
+    event.stopPropagation()
     props.onClose()
   })
 
@@ -414,8 +470,12 @@ export function DetailDialog(props: DetailDialogProps) {
           esc
         </text>
       </box>
-      <For each={props.lines}>{(line) => <text fg={theme.text}>{line}</text>}</For>
-      <Show when={props.footer}><text fg={theme.textMuted}>{props.footer}</text></Show>
+      <scrollbox maxHeight={contentHeight()} flexShrink={1}>
+        <For each={props.lines}>{(line) => <text fg={theme.text}>{line}</text>}</For>
+      </scrollbox>
+      <Show when={props.footer}>
+        <text flexShrink={0} fg={theme.textMuted}>{props.footer}</text>
+      </Show>
     </box>
   )
 }
@@ -445,16 +505,19 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
   useKeyboard((event) => {
     if (isKey(event, "escape", "esc")) {
       event.preventDefault()
+      event.stopPropagation()
       cancel()
       return
     }
     if (isKey(event, "left", "arrowleft", "right", "arrowright")) {
       event.preventDefault()
+      event.stopPropagation()
       setActive((value) => (value === "confirm" ? "cancel" : "confirm"))
       return
     }
     if (isKey(event, "return", "enter")) {
       event.preventDefault()
+      event.stopPropagation()
       if (active() === "confirm") confirm()
       else cancel()
     }
@@ -508,10 +571,32 @@ export interface TextPromptDialogProps {
 
 export function TextPromptDialog(props: TextPromptDialogProps) {
   let textarea: TextareaRenderable | undefined
+  let secretValue = props.value ?? ""
+  let masking = false
+
+  function maskSecretInput() {
+    if (!props.secret || !textarea || masking) return
+    const next = textarea.plainText
+    const previous = "•".repeat(secretValue.length)
+    if (next === previous) return
+    let prefix = 0
+    while (prefix < previous.length && prefix < next.length && previous[prefix] === next[prefix]) prefix++
+    let suffix = 0
+    while (
+      suffix < previous.length - prefix
+      && suffix < next.length - prefix
+      && previous[previous.length - 1 - suffix] === next[next.length - 1 - suffix]
+    ) suffix++
+    secretValue = secretValue.slice(0, prefix) + next.slice(prefix, next.length - suffix) + secretValue.slice(secretValue.length - suffix)
+    masking = true
+    textarea.setText("•".repeat(secretValue.length))
+    textarea.gotoBufferEnd()
+    masking = false
+  }
 
   function confirm() {
     if (props.busy) return
-    props.onConfirm(textarea?.plainText ?? "")
+    props.onConfirm(props.secret ? secretValue : textarea?.plainText ?? "")
   }
 
   onMount(() => {
@@ -547,12 +632,13 @@ export function TextPromptDialog(props: TextPromptDialogProps) {
             textarea = value
             value.keyBindings = SUBMIT_KEY_BINDINGS
           }}
-          initialValue={props.value}
+          initialValue={props.secret ? "•".repeat(secretValue.length) : props.value}
           placeholder={props.placeholder ?? (props.secret ? "API key" : "Enter text")}
           placeholderColor={theme.textMuted}
           textColor={props.busy ? theme.textMuted : theme.text}
           focusedTextColor={props.busy ? theme.textMuted : theme.text}
           cursorColor={props.busy ? theme.backgroundElement : theme.text}
+          onContentChange={maskSecretInput}
           onSubmit={confirm}
           onKeyDown={(event: any) => {
             if (!isKey(event, "escape", "esc")) return

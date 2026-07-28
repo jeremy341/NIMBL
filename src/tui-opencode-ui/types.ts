@@ -56,6 +56,7 @@ export interface CommandOption {
   titleWidth?: number
   truncateTitle?: boolean | "left"
   suggested?: boolean
+  aliases?: string[]
   /** Built-ins execute immediately; prompt commands insert text so arguments can be added. */
   autocomplete?: "execute" | "insert"
 }

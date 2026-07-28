@@ -2,13 +2,13 @@
 
 **Learn more. Use fewer tokens.**
 
-NIMBL is a CLI-based AI coding companion built in TypeScript that helps you code while teaching you along the way. It uses **10-50x fewer tokens** than existing tools like Cursor or Claude Code through intelligent context management and pedagogical design.
+NIMBL is a CLI-based AI coding companion built in TypeScript that helps you code while teaching you along the way. The current prerelease uses local lexical context selection and explicit context budgets; comparative token savings have not yet been benchmarked.
 
 ## Features
 
-- ⚡ **Token-Efficient** — 5K-30K tokens per task vs 100K-500K for Cursor
-- 🎓 **Learning-Focused** — Explains code, asks questions, tracks skill growth
-- 🔄 **Multi-Provider** — Works with OpenRouter, FreeLLMAPI, and any OpenAI-compatible API
+- ⚡ **Context-Conscious** — Selects focused excerpts locally instead of sending project-wide dumps
+- 🎓 **Learning-Focused** — Explain and Learn modes encourage questions, hints, and practice
+- 🔄 **Multi-Provider** — Works with the providers in NIMBL's configured provider catalog
 - 🚀 **Lightweight CLI** — No bloat, keyboard-driven, terminal-native
 - 🎨 **Black & Green Theme** — Inspired by `btop` and `lazygit`
 - 💰 **Budget-Conscious** — Works with free tier models (Groq, Google, Mistral, etc.)
@@ -17,10 +17,13 @@ NIMBL is a CLI-based AI coding companion built in TypeScript that helps you code
 
 ### Installation
 
+NIMBL is currently a source-distributed prerelease:
+
 ```bash
-npm install -g nimbl
-# or
-bunx nimbl
+git clone https://github.com/jeremy341/NIMBL
+cd NIMBL
+bun install
+bun run nimbl
 ```
 
 ### Set API Keys
@@ -53,19 +56,7 @@ nimbl --provider openrouter --model deepseek/deepseek-chat
 
 ### Usage
 
-```
-nimbl> Write a function that reverses a string
-
-Here's a function that reverses a string in TypeScript:
-
-function reverseString(str: string): string {
-  return str.split('').reverse().join('');
-}
-
-⚡ 847 tokens · ~$0.0034 (vs GPT-4o)
-
-nimbl>
-```
+Launch `nimbl`, choose a provider and model, then use the OpenTUI prompt. Tab cycles Build, Plan, Explain, and Learn modes. Slash autocomplete exposes the active command set.
 
 **Commands:**
 
@@ -76,15 +67,12 @@ nimbl>
 
 ```
 src/
-├── index.ts                 # REPL entry point, CLI logo
+├── tui-opencode.tsx         # Supported OpenTUI entry
+├── tui-opencode-ui/         # Transcript, prompt, dialogs, sidebar
 ├── config.ts                # Config resolution (.env, CLI args)
-├── core/
-│   ├── api.ts               # AI SDK wrapper + cost estimation
-│   ├── types.ts             # Type definitions
-│   └── provider-defaults.ts # Provider configuration
-└── tests/
-    ├── config.test.ts       # Config tests
-    └── api.test.ts          # API tests
+└── core/                    # Agent, providers, sessions, tools, context
+
+tests/                       # Unit, integration, and TUI smoke tests
 ```
 
 ## Tech Stack
@@ -93,7 +81,7 @@ src/
 - **Runtime:** Bun (cross-platform)
 - **AI:** Vercel AI SDK + OpenAI-compatible providers
 - **Testing:** Vitest
-- **Package:** npm (`nimbl`) or `bunx`
+- **Package:** source prerelease; npm publication is planned
 
 ## Development
 
@@ -113,7 +101,7 @@ bun install
 ### Run
 
 ```bash
-FREELLMAPI_KEY=test-key bun run src/index.ts
+bun run nimbl
 ```
 
 ### Test
@@ -128,40 +116,17 @@ bun test
 bun run typecheck
 ```
 
-## Cost Comparison
+## Token Accounting
 
-| Tool | Tokens per Task | Cost per Task |
-|------|----------------|---------------|
-| Cursor | 100K-500K | $0.50-$2.50 |
-| Claude Code | 200K-1M | $3.00-$15.00 |
-| GitHub Copilot | 50K-200K | $0.25-$1.00 |
-| **NIMBL** | **5K-30K** | **$0.01-$0.15** |
+NIMBL reports provider token usage and a hypothetical GPT-4o reference cost. It does not currently calculate actual provider billing or validated savings against competing products.
 
-Token savings achieved through:
-1. **Context budgeting** — Aggressive truncation via AST compression
-2. **Semantic search** — Only relevant code included
-3. **Prompt caching** — Reuse static sections across requests
-4. **Pedagogical design** — Questions > code generation
+Current context reduction uses lexical file selection, bounded excerpts, and a limited conversation history. Semantic retrieval, dependency graphs, AST compression, provider prompt caching, and reproducible comparative benchmarks remain planned work.
 
 ## Roadmap
 
-### V0.1 (Current)
-- ✅ REPL CLI with OpenRouter/FreeLLMAPI support
-- ✅ Token cost estimation
-- ✅ Multi-provider support
-- ✅ Configuration system
+The current prerelease includes the OpenTUI coding interface, streaming tools, permissions, persistent sessions, context visualization, and lightweight learning-state persistence.
 
-### V0.2 (Planned)
-- TUI integration via opencode (Ink-based)
-- Context budget visualization
-- Skill tree UI
-- Learning state persistence
-
-### V0.3+ (Future)
-- Autonomous agent mode (Code Mode)
-- Desktop app (Electron)
-- Web interface
-- IDE plugins (VS Code, JetBrains)
+Remaining work is tracked in the [AI Implementation Roadmap](./docs/AI_IMPLEMENTATION_ROADMAP.md). It separates release blockers, token infrastructure, retrieval, benchmarks, agents, teaching, TUI completion, and ecosystem work with acceptance criteria for AI coding agents.
 
 ## Environment Variables
 
@@ -177,30 +142,9 @@ NIMBL_MODEL=               # Model override
 
 ## Providers
 
-### Zero Setup (Keyless)
+NIMBL currently uses a static provider catalog covering hosted services such as OpenRouter, OpenAI, Anthropic, Google AI Studio, Groq, Mistral, GitHub Models, and others. Hosted services require their corresponding credentials.
 
-Works immediately with limited models:
-- Pollinations API
-- LLM7B
-- Kilo
-
-### Free Registration Required
-
-~50 models available with free tier:
-- Google AI Studio
-- Groq
-- Mistral
-- Cerebras
-- GitHub Models
-- HuggingFace
-- Cloudflare Workers AI
-
-### Paid (Optional)
-
-Full model access:
-- OpenRouter ($5 free credits)
-- OpenAI ($5 free trial)
-- Anthropic
+Ollama, LM Studio, and FreeLLM API are supported as local connectors, but their servers and models must be installed and running separately. Use `/provider` in the TUI to inspect the current catalog.
 
 ## Contributing
 
@@ -220,8 +164,8 @@ MIT License — See LICENSE file for details
 
 - GitHub Issues: [Bug reports & feature requests](https://github.com/jeremy341/NIMBL/issues)
 - Documentation: [Full research report](./docs/RESEARCH_REPORT.md)
+- Roadmap: [AI implementation roadmap](./docs/AI_IMPLEMENTATION_ROADMAP.md)
 
 ---
 
 **Made with ❤️ for Hack Club members and budget-conscious developers.**
-

@@ -102,9 +102,9 @@ function roughChanges(before: string, after: string): Pick<ModifiedFile, "additi
   return { additions, deletions }
 }
 
-function modifiedFiles(session: ChatSession): ModifiedFile[] {
+function modifiedFiles(snapshots: ChatSession["snapshots"]): ModifiedFile[] {
   const files = new Map<string, { before: string; after: string; first: number; last: number }>()
-  for (const snapshot of session.snapshots ?? []) {
+  for (const snapshot of snapshots ?? []) {
     const current = files.get(snapshot.path)
     if (!current) {
       files.set(snapshot.path, {
@@ -179,8 +179,16 @@ export function Sidebar(props: SidebarProps) {
   const [filesOpen, setFilesOpen] = createSignal(true)
   const todos = createMemo(() => parseTodos(latestTodoOutput(props.session)))
   const showTodos = createMemo(() => todos().length > 0 && todos().some((todo) => todo.status !== "completed"))
-  const files = createMemo(() => modifiedFiles(props.session))
-  const path = createMemo(() => pathParts(props.cwd))
+  let previousSnapshots: ChatSession["snapshots"]
+  let previousFiles: ModifiedFile[] = []
+  const files = createMemo(() => {
+    const snapshots = props.session.snapshots
+    if (snapshots === previousSnapshots) return previousFiles
+    previousSnapshots = snapshots
+    previousFiles = modifiedFiles(snapshots)
+    return previousFiles
+  })
+  const path = createMemo(() => pathParts(truncateLeft(props.cwd.replace(/\\/g, "/").replace(/\/$/, ""), 38)))
   const tokens = createMemo(() => props.session.contextTokens ?? 0)
   const percent = createMemo(() => {
     const window = props.session.contextWindow
@@ -223,7 +231,7 @@ export function Sidebar(props: SidebarProps) {
             </text>
             <text fg={theme.textMuted}>{tokens().toLocaleString()} tokens</text>
             <text fg={theme.textMuted}>{percent()}% used</text>
-            <text fg={theme.textMuted}>{money.format(props.cost)} spent</text>
+            <text fg={theme.textMuted}>{money.format(props.cost)} GPT-4o reference</text>
           </box>
 
           <Show when={showTodos()}>
@@ -277,7 +285,7 @@ export function Sidebar(props: SidebarProps) {
       </scrollbox>
 
       <box flexShrink={0} gap={1} paddingTop={1}>
-        <text>
+        <text width="100%" flexShrink={0} overflow="hidden" wrapMode="none">
           <span style={{ fg: theme.textMuted }}>{path().parent ? path().parent + "/" : ""}</span>
           <span style={{ fg: theme.text }}>{path().name}</span>
         </text>

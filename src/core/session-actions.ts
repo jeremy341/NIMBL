@@ -1,12 +1,19 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
-import { dirname, isAbsolute, relative, resolve } from "node:path"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { dirname } from "node:path"
 import type { StoredSession } from "./sessions"
+import { resolveUnprotectedProjectPath } from "./project-path"
 
-export interface FileSnapshot {
+export interface SnapshotFileChange {
   path: string
   before: string
   after: string
+  beforeExists?: boolean
+  afterExists?: boolean
+}
+
+export interface FileSnapshot extends SnapshotFileChange {
   time: number
+  changes?: SnapshotFileChange[]
 }
 
 export interface SessionWithSnapshots extends StoredSession {
@@ -40,21 +47,53 @@ export function recordSnapshot<T extends SessionWithSnapshots>(session: T, snaps
   return { ...session, snapshots, redoSnapshots: [], updated: Date.now() }
 }
 
+export function recordSnapshotGroup<T extends SessionWithSnapshots>(session: T, changes: SnapshotFileChange[], time: number): T {
+  if (!changes.length) return session
+  const first = changes[0]!
+  return recordSnapshot(session, {
+    ...first,
+    path: changes.map((change) => change.path).join(", "),
+    changes,
+    time,
+  })
+}
+
 function safeProjectPath(root: string, path: string) {
-  const target = resolve(root, path)
-  const rel = relative(resolve(root), target)
-  if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new Error("Snapshot path is outside the project.")
-  return target
+  return resolveUnprotectedProjectPath(root, path).full
+}
+
+function snapshotChanges(snapshot: FileSnapshot) {
+  return snapshot.changes?.length ? snapshot.changes : [snapshot]
+}
+
+function assertCurrent(root: string, changes: SnapshotFileChange[], side: "before" | "after", message: string) {
+  return changes.map((change) => {
+    const file = safeProjectPath(root, change.path)
+    const expectedExists = change[`${side}Exists`] ?? true
+    const exists = existsSync(file)
+    const content = exists ? readFileSync(file, "utf8") : ""
+    if (exists !== expectedExists || (exists && content !== change[side])) throw new Error(message)
+    return { change, file }
+  })
+}
+
+function restore(files: ReturnType<typeof assertCurrent>, side: "before" | "after") {
+  for (const { change, file } of files) {
+    const shouldExist = change[`${side}Exists`] ?? true
+    if (!shouldExist) {
+      if (existsSync(file)) rmSync(file)
+      continue
+    }
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, change[side], "utf8")
+  }
 }
 
 export function undoSnapshot<T extends SessionWithSnapshots>(root: string, session: T): { session: T; snapshot?: FileSnapshot } {
   const snapshot = session.snapshots?.at(-1)
   if (!snapshot) return { session }
-  const file = safeProjectPath(root, snapshot.path)
-  if (!existsSync(dirname(file))) throw new Error("Snapshot target directory no longer exists.")
-  const current = existsSync(file) ? readFileSync(file, "utf8") : ""
-  if (current !== snapshot.after) throw new Error("The file changed after this snapshot; undo was not applied.")
-  writeFileSync(file, snapshot.before, "utf8")
+  const files = assertCurrent(root, snapshotChanges(snapshot), "after", "A file changed after this snapshot; undo was not applied.")
+  restore(files, "before")
   return {
     snapshot,
     session: { ...session, snapshots: session.snapshots!.slice(0, -1), redoSnapshots: [...(session.redoSnapshots || []), snapshot], updated: Date.now() },
@@ -64,11 +103,8 @@ export function undoSnapshot<T extends SessionWithSnapshots>(root: string, sessi
 export function redoSnapshot<T extends SessionWithSnapshots>(root: string, session: T): { session: T; snapshot?: FileSnapshot } {
   const snapshot = session.redoSnapshots?.at(-1)
   if (!snapshot) return { session }
-  const file = safeProjectPath(root, snapshot.path)
-  if (!existsSync(dirname(file))) throw new Error("Snapshot target directory no longer exists.")
-  const current = existsSync(file) ? readFileSync(file, "utf8") : ""
-  if (current !== snapshot.before) throw new Error("The file changed after undo; redo was not applied.")
-  writeFileSync(file, snapshot.after, "utf8")
+  const files = assertCurrent(root, snapshotChanges(snapshot), "before", "A file changed after undo; redo was not applied.")
+  restore(files, "after")
   return {
     snapshot,
     session: { ...session, snapshots: [...(session.snapshots || []), snapshot], redoSnapshots: session.redoSnapshots!.slice(0, -1), updated: Date.now() },

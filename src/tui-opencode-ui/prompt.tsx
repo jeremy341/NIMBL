@@ -1,8 +1,9 @@
-import { TextAttributes, type BoxRenderable, type TextareaRenderable } from "@opentui/core"
-import { useTerminalDimensions } from "@opentui/solid"
+import { TextAttributes, decodePasteBytes, type BoxRenderable, type PasteEvent, type TextareaRenderable } from "@opentui/core"
+import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { EmptyBorder, SplitBorder, setBorder } from "./border"
 import { Spinner } from "./spinner"
+import { syntaxStyle } from "./syntax"
 import { agentColor, theme } from "./theme"
 import type { AgentMode, CommandOption, SessionPromptRef } from "./types"
 
@@ -11,6 +12,24 @@ const SUBMIT_KEY_BINDINGS = [
   { name: "kpenter", action: "submit" as const },
   { name: "return", shift: true, action: "newline" as const },
 ]
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+
+function promptOffsetWidth(value: string) {
+  let width = 0
+  for (const part of graphemes.segment(value)) width += part.segment === "\n" ? 1 : Bun.stringWidth(part.segment)
+  return width
+}
+
+function displayOffsetIndex(value: string, offset: number) {
+  if (offset <= 0) return 0
+  let width = 0
+  for (const part of graphemes.segment(value)) {
+    const next = width + promptOffsetWidth(part.segment)
+    if (next > offset) return part.index
+    width = next
+  }
+  return value.length
+}
 
 export interface SessionPromptProps {
   value: string
@@ -45,9 +64,10 @@ function titlecase(value: string): string {
 function commandMatches(option: CommandOption, query: string): boolean {
   const value = commandName(option.value).slice(1).toLowerCase()
   const title = option.title.toLowerCase()
-  if (!query || value.startsWith(query) || title.startsWith(query)) return true
+  const aliases = option.aliases?.map((alias) => alias.toLowerCase()) ?? []
+  if (!query || value.startsWith(query) || title.startsWith(query) || aliases.some((alias) => alias.startsWith(query))) return true
   let cursor = 0
-  for (const character of `${value} ${title} ${option.description ?? ""}`.toLowerCase()) {
+  for (const character of `${value} ${aliases.join(" ")} ${title} ${option.description ?? ""}`.toLowerCase()) {
     if (character === query[cursor]) cursor++
     if (cursor === query.length) return true
   }
@@ -56,11 +76,18 @@ function commandMatches(option: CommandOption, query: string): boolean {
 
 export function SessionPrompt(props: SessionPromptProps) {
   const dimensions = useTerminalDimensions()
+  const renderer = useRenderer()
   const [selected, setSelected] = createSignal(0)
   const [dismissed, setDismissed] = createSignal<string>()
   const [currentValue, setCurrentValue] = createSignal(props.value)
+  const [interruptArmed, setInterruptArmed] = createSignal(false)
   let textarea: TextareaRenderable | undefined
+  let root: BoxRenderable | undefined
+  let interruptTimer: ReturnType<typeof setTimeout> | undefined
+  let pasteTypeID = 0
+  const pastedBlocks = new Map<number, string>()
   let syncing = false
+  const pasteStyleID = syntaxStyle.getStyleId("extmark.paste")!
 
   const maxHeight = createMemo(() => Math.max(6, Math.floor(dimensions().height / 3)))
   const slashQuery = createMemo(() => {
@@ -77,6 +104,11 @@ export function SessionPrompt(props: SessionPromptProps) {
   const autocompleteOpen = createMemo(
     () => slashQuery() !== undefined && dismissed() !== currentValue() && matches().length > 0,
   )
+  const autocompleteHeight = createMemo(() => {
+    dimensions()
+    currentValue()
+    return Math.min(10, matches().length, Math.max(1, root?.y ?? 10))
+  })
 
   createEffect(() => {
     const value = props.value
@@ -99,15 +131,76 @@ export function SessionPrompt(props: SessionPromptProps) {
     if (props.disabled) textarea.blur()
   })
 
+  createEffect(() => {
+    if (props.status === "busy") return
+    setInterruptArmed(false)
+    if (interruptTimer) clearTimeout(interruptTimer)
+    interruptTimer = undefined
+  })
+
   function setValue(value: string) {
     setCurrentValue(value)
     if (textarea && !textarea.isDestroyed) {
       syncing = true
+      textarea.extmarks.clear()
+      pastedBlocks.clear()
       textarea.setText(value)
       textarea.gotoBufferEnd()
       syncing = false
     }
     props.onInput(value)
+  }
+
+  function syncTextareaValue() {
+    if (!textarea || textarea.isDestroyed) return
+    const value = textarea.plainText
+    setCurrentValue(value)
+    props.onInput(value)
+  }
+
+  function expandPastedBlocks(value: string): string {
+    if (!textarea || !pasteTypeID || pastedBlocks.size === 0) return value
+    const ranges = textarea.extmarks.getAllForTypeId(pasteTypeID)
+      .flatMap((mark) => {
+        const content = pastedBlocks.get(mark.id)
+        return content === undefined ? [] : [{ start: mark.start, end: mark.end, content }]
+      })
+      .sort((left, right) => right.start - left.start)
+    let expanded = value
+    for (const range of ranges) {
+      const start = displayOffsetIndex(expanded, range.start)
+      const end = displayOffsetIndex(expanded, range.end)
+      expanded = expanded.slice(0, start) + range.content + expanded.slice(end)
+    }
+    return expanded
+  }
+
+  function onPaste(event: PasteEvent) {
+    if (props.disabled || !textarea || textarea.isDestroyed) {
+      event.preventDefault()
+      return
+    }
+    const normalized = decodePasteBytes(event.bytes).replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+    const content = normalized.trim()
+    if (!content) return
+    event.preventDefault()
+    const lineCount = (content.match(/\n/g)?.length ?? 0) + 1
+    if (lineCount >= 3 || content.length > 150) {
+      const marker = `[Pasted ~${lineCount} lines]`
+      const start = textarea.cursorOffset
+      textarea.insertText(marker + " ")
+      const id = textarea.extmarks.create({
+        start,
+        end: start + promptOffsetWidth(marker),
+        virtual: true,
+        styleId: pasteStyleID,
+        typeId: pasteTypeID,
+      })
+      pastedBlocks.set(id, content)
+    } else {
+      textarea.insertText(normalized)
+    }
+    syncTextareaValue()
   }
 
   function selectCommand(index = selected()) {
@@ -128,15 +221,50 @@ export function SessionPrompt(props: SessionPromptProps) {
 
   function submit() {
     if (props.disabled) return
-    const value = (textarea?.plainText ?? currentValue()).trim()
+    const value = expandPastedBlocks(textarea?.plainText ?? currentValue()).trim()
     if (!value) return
     if (value.startsWith("/")) props.onCommand(value)
     else props.onSubmit(value)
+    pastedBlocks.clear()
+  }
+
+  function requestInterrupt() {
+    if (interruptArmed()) {
+      setInterruptArmed(false)
+      if (interruptTimer) clearTimeout(interruptTimer)
+      interruptTimer = undefined
+      props.onAbort()
+      return
+    }
+    setInterruptArmed(true)
+    if (interruptTimer) clearTimeout(interruptTimer)
+    interruptTimer = setTimeout(() => {
+      interruptTimer = undefined
+      setInterruptArmed(false)
+    }, 2_000)
   }
 
   function onKeyDown(event: any) {
     const key = keyName(event)
     if (autocompleteOpen()) {
+      if (key === "tab") {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        selectCommand()
+        return
+      }
+      if (event.ctrl && key === "n") {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        setSelected((value) => (value + 1) % matches().length)
+        return
+      }
+      if (event.ctrl && key === "p") {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        setSelected((value) => (value - 1 + matches().length) % matches().length)
+        return
+      }
       if (key === "down" || key === "arrowdown") {
         event.preventDefault?.()
         event.stopPropagation?.()
@@ -163,15 +291,22 @@ export function SessionPrompt(props: SessionPromptProps) {
       }
     }
 
+    if ((key === "escape" || key === "esc") && renderer.getSelection()?.getSelectedText()) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      renderer.clearSelection()
+      return
+    }
+
     if ((key === "escape" || key === "esc") && props.status === "busy") {
       event.preventDefault?.()
       event.stopPropagation?.()
-      props.onAbort()
+      requestInterrupt()
       return
     }
 
     if (props.disabled) event.preventDefault?.()
-    // Tab intentionally bubbles to the app-level agent-mode handler.
+    // Tab intentionally bubbles to the app-level agent-mode handler when autocomplete is closed.
   }
 
   const promptRef: SessionPromptRef = {
@@ -193,23 +328,24 @@ export function SessionPrompt(props: SessionPromptProps) {
     }, 1)
     onCleanup(() => {
       clearTimeout(timer)
+      if (interruptTimer) clearTimeout(interruptTimer)
       props.ref?.(undefined)
     })
   })
 
   return (
-    <box width="100%" position="relative">
+    <box ref={(value: BoxRenderable) => { root = value }} width="100%" position="relative">
       <Show when={autocompleteOpen()}>
         <box
           position="absolute"
-          top={-Math.min(10, matches().length)}
+          top={-autocompleteHeight()}
           left={0}
           zIndex={100}
           width="100%"
           borderColor={theme.border}
           ref={(value: BoxRenderable) => setBorder(value, ["left", "right"], SplitBorder.customBorderChars)}
         >
-          <box backgroundColor={theme.backgroundMenu} height={Math.min(10, matches().length)}>
+          <box backgroundColor={theme.backgroundMenu} height={autocompleteHeight()}>
             <For each={matches()}>
               {(option, index) => {
                 const active = () => index() === selected()
@@ -290,12 +426,15 @@ export function SessionPrompt(props: SessionPromptProps) {
               props.onInput(value)
             }}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             onSubmit={submit}
             onMouseDown={(event: any) => event.target?.focus?.()}
             cursorColor={props.disabled ? theme.backgroundElement : theme.text}
             ref={(value: TextareaRenderable) => {
               textarea = value
               value.keyBindings = SUBMIT_KEY_BINDINGS
+              value.syntaxStyle = syntaxStyle
+              pasteTypeID = value.extmarks.registerType("prompt-paste")
               props.ref?.(promptRef)
             }}
           />
@@ -338,8 +477,8 @@ export function SessionPrompt(props: SessionPromptProps) {
               <box marginLeft={1} flexDirection="row" gap={1}>
                 <Spinner color={agentColor(props.agent)} />
               </box>
-              <text fg={theme.text} onMouseUp={props.onAbort}>
-                esc <span style={{ fg: theme.textMuted }}>interrupt</span>
+              <text fg={theme.text} onMouseUp={requestInterrupt}>
+                esc <span style={{ fg: theme.textMuted }}>{interruptArmed() ? "again to interrupt" : "interrupt"}</span>
               </text>
             </>
           }

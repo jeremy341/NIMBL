@@ -20,5 +20,5 @@
     }
   },
   "include": ["src", "tests"],
-  "exclude": ["node_modules", "dist", "src/tui", "src/tui.tsx"]
+  "exclude": ["node_modules", "dist"]
 }

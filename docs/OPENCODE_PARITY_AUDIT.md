@@ -86,17 +86,10 @@ flowchart TD
 | Diagnostics | header plus wide-screen inspector, details/context commands | Partial: no true cache/cost/model diagnostics |
 | Responsive layout | centered dialogs and hidden inspector on smaller widths | Partial: current minimum is 60×18; target tested 80×24 and a deliberate 60-column single-pane mode |
 
-### Plain REPL flow (bun run dev)
+### Supported application flow
 
-src/index.ts is a separate legacy readline REPL. It resolves one provider and
-model, accepts plain text, calls sendChat(), prints text and aggregate token
-stats, and supports only /help, /model, /provider, /stats, /status, /export
-(not implemented), /clear, and /quit.
-
-This is not feature-equivalent with the built nimbl command. nimbl uses the
-OpenTUI app; bun run dev uses the legacy REPL. Keep both only if the REPL is
-explicitly a --no-tui fallback that shares the same session/config/command core.
-Today it does not.
+`nimbl`, `bun run nimbl`, and `bun run dev` use the same OpenTUI application.
+The divergent readline and Ink frontends were removed during release hardening.
 
 ## OpenCode interaction flow
 
@@ -223,7 +216,7 @@ The score is held back by interaction completeness:
    prompt-cache accounting, visible context rationale, teaching/learning loop.
 4. **Reach power-user parity:** command files, keymaps/themes, MCP, plugins,
    LSP, subagents, worktrees, sharing, ACP/IDE.
-5. **Harden distribution:** unify legacy REPL/TUI commands, add --no-tui,
+5. **Harden distribution:** add a shared-core `--no-tui` mode only if a concrete requirement emerges,
    remove generated JS/.d.ts duplicates from src/, and add render/PTY tests.
 
 ## Verification completed
@@ -235,4 +228,3 @@ The score is held back by interaction completeness:
 
 The build produces dist/nimbl.js. Use bun run nimbl to build and launch the
 TUI. bun run build intentionally only builds it.
-

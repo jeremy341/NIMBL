@@ -14,19 +14,21 @@ export function reduceAssistantEvents(
   now: () => number = Date.now,
 ): StoredMessage {
   let text = message.text
-  const parts: StoredAssistantPart[] = assistantParts(message).map((part) => ({ ...part }))
+  const parts: StoredAssistantPart[] = [...assistantParts(message)]
 
   for (const event of events) {
     if (event.kind === "text") {
       text += event.delta
       const last = parts.at(-1)
-      if (last?.type === "text") last.text += event.delta
+      if (last?.type === "text") parts[parts.length - 1] = { ...last, text: last.text + event.delta }
       else parts.push({ id: createID(), type: "text", text: event.delta })
       continue
     }
     if (event.kind === "reasoning") {
       const last = parts.at(-1)
-      if (last?.type === "reasoning" && last.ended === undefined) last.text += event.delta
+      if (last?.type === "reasoning" && last.ended === undefined) {
+        parts[parts.length - 1] = { ...last, text: last.text + event.delta }
+      }
       else parts.push({ id: createID(), type: "reasoning", text: event.delta, started: now() })
       continue
     }

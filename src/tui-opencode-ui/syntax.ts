@@ -2,6 +2,7 @@ import { SyntaxStyle } from "@opentui/core"
 import { theme } from "./theme"
 
 export const syntaxStyle = SyntaxStyle.fromTheme([
+  { scope: ["extmark.paste"], style: { foreground: theme.primaryForeground, bold: true } },
   { scope: ["comment"], style: { foreground: theme.syntaxComment, italic: true } },
   { scope: ["keyword", "keyword.modifier", "keyword.directive"], style: { foreground: theme.syntaxKeyword } },
   { scope: ["function", "function.call", "method", "method.call"], style: { foreground: theme.syntaxFunction } },

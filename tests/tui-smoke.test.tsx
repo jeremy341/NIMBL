@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { RGBA } from "@opentui/core"
+import { RGBA, type BoxRenderable } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 import { createSignal } from "solid-js"
 import { DialogOverlay, SelectDialog, SessionPrompt, SessionScreen, theme, type ChatSession, type SessionPromptRef } from "@/tui-opencode-ui"
@@ -83,6 +83,9 @@ describe("OpenCode-derived TUI", () => {
       expect(rows.find((row) => row.includes("Select model"))?.indexOf("Select model")).toBe(24)
       expect(rows.find((row) => row.includes("Provider"))?.indexOf("Provider")).toBe(24)
       expect(rows.find((row) => row.includes("Test Model"))?.indexOf("Test Model")).toBe(24)
+      const backdrop = setup.renderer.root.findDescendantById("dialog-backdrop") as BoxRenderable | undefined
+      expect(backdrop?.width).toBe(100)
+      expect(backdrop?.height).toBe(30)
       await setup.waitForVisualIdle()
     } finally {
       setup.renderer.destroy()
@@ -189,4 +192,78 @@ describe("OpenCode-derived TUI", () => {
       setup.renderer.destroy()
     }
   })
+
+  it("completes slash autocomplete with Tab instead of changing agent", async () => {
+    let current = ""
+    let prompt: SessionPromptRef | undefined
+    const setup = await testRender(() => {
+      const [value, setValue] = createSignal("/tes")
+      current = value()
+      return (
+        <SessionPrompt
+          value={value()}
+          onInput={(next) => { current = next; setValue(next) }}
+          onSubmit={() => {}}
+          onAbort={() => {}}
+          onCommand={() => {}}
+          commands={[{ value: "test", title: "Test", autocomplete: "insert" }]}
+          agent="build"
+          provider="Test Provider"
+          model="test-model"
+          cwd="C:/project"
+          status="idle"
+          ref={(value) => { prompt = value }}
+        />
+      )
+    }, { width: 100, height: 30 })
+    try {
+      await setup.flush()
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      prompt?.focus()
+      setup.mockInput.pressTab()
+      await setup.flush()
+      expect(current).toBe("/test ")
+    } finally {
+      setup.renderer.destroy()
+    }
+  })
+
+  it("summarizes multiline bracketed paste and expands it on submit", async () => {
+    let submitted = ""
+    let prompt: SessionPromptRef | undefined
+    const setup = await testRender(() => (
+      <SessionPrompt
+        value=""
+        onInput={() => {}}
+        onSubmit={(value) => { submitted = value }}
+        onAbort={() => {}}
+        onCommand={() => {}}
+        commands={[]}
+        agent="build"
+        provider="Test Provider"
+        model="test-model"
+        cwd="C:/project"
+        status="idle"
+        ref={(value) => { prompt = value }}
+      />
+    ), { width: 100, height: 30 })
+    try {
+      await setup.flush()
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      prompt?.focus()
+      await setup.mockInput.pasteBracketedText("first\nsecond\nthird")
+      await setup.flush()
+      const frame = setup.captureCharFrame()
+      expect(frame).toContain("[Pasted ~3 lines]")
+      const marker = setup.captureSpans().lines.flatMap((line) => line.spans)
+        .find((span) => span.text.includes("[Pasted ~3 lines]"))
+      expect(marker?.fg.equals(RGBA.fromHex(theme.primaryForeground))).toBe(true)
+      setup.mockInput.pressEnter()
+      await setup.flush()
+      expect(submitted).toBe("first\nsecond\nthird")
+    } finally {
+      setup.renderer.destroy()
+    }
+  })
+
 })

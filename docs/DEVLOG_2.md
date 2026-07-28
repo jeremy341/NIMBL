@@ -30,7 +30,7 @@ Two screens, one signal: `view()` toggles between `"home"` and `"chat"`.
 
 `resolveConfig()` resolves provider/model/key from CLI flags → env vars → hardcoded defaults with a priority chain. Provider defaults (`freellmapi` / `openrouter`) live in `provider-defaults.ts` with preconfigured API keys for testing.
 
-`sendChat()` wraps Vercel's AI SDK (`generateText` + `createOpenAI`), mapping provider names to OpenAI-compatible base URLs. `estimateSavings()` computes cost against GPT-4o reference pricing (input: $2.50/Mtok, output: $10/Mtok).
+`sendChat()` wraps Vercel's AI SDK (`generateText` + `createOpenAI`), mapping provider names to OpenAI-compatible base URLs. `estimateReferenceCost()` applies GPT-4o reference pricing (input: $2.50/Mtok, output: $10/Mtok); it does not calculate actual savings.
 
 ## Testing
 

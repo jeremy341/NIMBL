@@ -20,7 +20,7 @@ export interface NimblSettings {
 
 export const DEFAULT_SETTINGS: NimblSettings = {
   theme: "nimbl",
-  keybinds: { palette: "ctrl+p", sessions: "ctrl+s", agent: "tab" },
+  keybinds: { palette: "ctrl+p", sessions: "ctrl+l", agent: "tab" },
   customCommands: {},
   providerRouting: { preferLocal: false, preferLowCost: false, preferFast: false },
   permissions: {

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs"
-import { basename, isAbsolute, relative, resolve } from "node:path"
+import { resolveUnprotectedProjectPath } from "./project-path"
 
 export interface PromptPreparation {
   text: string
@@ -13,17 +13,15 @@ export interface PromptPreparationOptions {
   runCommand: (command: string) => Promise<string>
 }
 
-function insideProject(root: string, path: string) {
-  const full = resolve(root, path)
-  const rel = relative(root, full)
-  if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new Error(`Reference "${path}" is outside this project.`)
-  return { full, rel: rel.replaceAll("\\", "/") }
-}
-
 function readAttachment(root: string, path: string) {
-  const target = insideProject(root, path)
-  const name = basename(target.full)
-  if ((name === ".env" || name.startsWith(".env.")) && name !== ".env.example") throw new Error("Environment files cannot be attached.")
+  let target
+  try {
+    target = resolveUnprotectedProjectPath(root, path)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.startsWith("Environment files")) throw new Error("Environment files cannot be attached.")
+    throw error
+  }
   if (!existsSync(target.full)) throw new Error(`Referenced file "${path}" was not found.`)
   const content = readFileSync(target.full, "utf8")
   return { path: target.rel, content: content.length > 24_000 ? content.slice(0, 24_000) + "\n… attachment truncated by NIMBL" : content }

@@ -45,4 +45,21 @@ describe("assistant transcript parts", () => {
       parts: [{ id: "thought", type: "reasoning", ended: 300 }],
     })
   })
+
+  it("preserves unchanged part identity during text streaming", () => {
+    const tool = { id: "tool", type: "tool", tool: "read", state: "completed", title: "Read", output: "done" } as const
+    const text = { id: "text", type: "text", text: "Hello" } as const
+    const message: StoredMessage = {
+      id: "assistant",
+      role: "assistant",
+      text: "Hello",
+      time: 100,
+      parts: [tool, text],
+    }
+
+    const updated = reduceAssistantEvents(message, [{ kind: "text", delta: " world" }], () => "unused")
+    expect(updated.parts?.[0]).toBe(tool)
+    expect(updated.parts?.[1]).not.toBe(text)
+    expect(updated.parts?.[1]).toMatchObject({ text: "Hello world" })
+  })
 })

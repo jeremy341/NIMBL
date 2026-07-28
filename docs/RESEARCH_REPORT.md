@@ -5,7 +5,7 @@
 
 **Language:** TypeScript (ESNext)
 **Runtime:** Bun 1.3.14+
-**TUI Framework:** Ink 5 (React 18) — primary; OpenTUI 0.4.5 (SolidJS 1.9.10) — experimental
+**TUI Framework:** OpenTUI 0.4.5 with SolidJS 1.9.10
 **Theme:** Black (#0a0a0a) primary, Forest Green (#06402b) accent
 
 ---
@@ -57,20 +57,20 @@ Every existing AI coding tool is a **code generator**. None teach:
 
 ### 1.3 The Distribution Barrier
 
-All existing tools require at least one paid API key or subscription. Zero tools ship as a **single `bunx nimbl` command** that works immediately with no setup.
+Zero-setup distribution is a product goal. The current repository is private-package source software and requires installation plus a configured provider.
 
 ---
 
 ## 2. Solution Overview
 
-### 2.1 Token Efficiency (10–50x reduction)
+### 2.1 Token Efficiency Target
 
-NIMBL targets **5K–30K tokens per task** through:
+The following mechanisms are proposed and require implementation plus controlled validation:
 
-1. **Semantic search + graph traversal** — retrieves only relevant code (~1K tokens)
-2. **AST compression** — reduces parsed code size 64–70%
-3. **Prompt caching** — saves 90% on repeated context
-4. **No project maps or file dumps** — avoids the Cursor model entirely
+1. **Semantic search + graph traversal** — not implemented; current retrieval is lexical
+2. **AST compression** — not implemented; current compression uses regex line filtering
+3. **Provider prompt caching** — not implemented; the local retrieval cache does not reduce provider input tokens
+4. **No automatic project maps or file dumps** — implemented as a current design constraint
 
 ### 2.2 Learning Companion (vs Code Generator)
 
@@ -78,8 +78,8 @@ NIMBL teaches as it helps:
 
 - Explains *why* changes are needed, not just *what* changed
 - Uses Socratic questioning — asks instead of solving
-- Tracks skill progress over time (future: skill tree, spaced repetition)
-- Works offline with local models (Ollama)
+- Records basic concept encounters (future: assessed skill tree and spaced repetition)
+- Can connect to a separately installed local model server such as Ollama
 
 ### 2.3 Zero-Setup Distribution
 
@@ -87,7 +87,7 @@ NIMBL teaches as it helps:
 bunx nimbl
 ```
 
-No API key required for keyless providers (Pollinations, LLM7, Kilo). Free-tier provider keys are purely additive.
+Current providers require either configured credentials or a separately running local service. Keyless provider support and package publication are future work.
 
 ---
 
@@ -97,7 +97,7 @@ No API key required for keyless providers (Pollinations, LLM7, Kilo). Free-tier 
 
 | Tool | TUI/CLI | Agent Mode | Pedagogy | Token Cost/Task | Offline | Open Source |
 |------|---------|-----------|----------|----------------|---------|-------------|
-| **NIMBL** | **Ink TUI** | **Future** | **Yes (core)** | **5K–30K** | **Yes (Ollama)** | **Yes** |
+| **NIMBL** | **OpenTUI** | **Yes** | **Prompt-directed** | **Not benchmarked** | **Local connector** | **Yes** |
 | Cursor | GUI | Yes | No | 200K–1M | Limited | No |
 | Claude Code | TUI (Ink) | Yes | No | 100K–500K | No | No |
 | Copilot | IDE | Yes | No | 50K–200K | No | No |
@@ -132,7 +132,7 @@ Parsing source code into ASTs and compressing the tree structure yields 64–70%
 | Recursive summarization | 80–90% | High (lossy) | High (LLM calls) |
 | Context-aware pruning | 50–75% | Low (only removes irrelevant) | Medium (depends on query) |
 
-**Selected approach:** AST minification via tree-sitter (WASM), with semantic chunking as fallback for languages without tree-sitter grammars.
+**Proposed approach:** AST minification via tree-sitter (WASM), with semantic chunking as fallback for languages without tree-sitter grammars. The figures above are research hypotheses, not measured NIMBL results.
 
 ### 4.2 Prompt Caching Research
 
@@ -156,30 +156,23 @@ For teams: local semantic cache on developer machines + shared Redis-backed cach
 ```
 NIMBL/
 ├── src/
-│   ├── index.ts              # REPL entry (readline-based, legacy)
 │   ├── config.ts             # Config resolution (.env, CLI args, defaults)
-│   ├── tui.tsx               # Ink TUI entry point (React) — legacy fallback
-│   ├── tui-opencode.tsx      # OpenTUI TUI entry point (SolidJS) — CURRENT PRIMARY
+│   ├── tui-opencode.tsx      # Sole supported OpenTUI entry
+│   ├── tui-opencode-ui/      # Transcript, prompt, dialogs, tools, sidebar
 │   ├── core/
 │   │   ├── agent.ts          # Agent system (tool use, build/plan/explain/learn modes)
 │   │   ├── api.ts            # AI SDK wrapper + cost estimation
 │   │   ├── commands.ts       # Project-local command loader (.nimbl/commands/*.md)
-│   │   ├── context.ts        # Semantic context selection (file excerpting + cache)
+│   │   ├── context.ts        # Lexical context selection (file excerpting + cache)
 │   │   ├── learning.ts       # Learning state tracker (concepts, confidence, Socratic)
 │   │   ├── permissions.ts    # Wildcard-based permission policy engine
 │   │   ├── prompt-context.ts # @file and !`command` expansion in prompts
-│   │   ├── providers.ts      # 15 provider definitions (OpenAI-compatible + Anthropic)
-│   │   ├── provider-defaults.ts # Legacy provider config defaults
+│   │   ├── providers.ts      # Provider and model catalog
 │   │   ├── routing.ts        # Automatic provider routing (local/fast/budget)
 │   │   ├── session-actions.ts # Session rename, fork, undo/redo snapshots, compact
 │   │   ├── sessions.ts       # Session persistence (.nimbl/sessions.json)
 │   │   ├── settings.ts       # Settings persistence (.nimbl/settings.json)
-│   │   └── types.ts          # Type definitions (Message, ChatRequest, etc.)
-│   └── tui/                  # Ink/React TUI components (legacy)
-│       ├── app.tsx           # App shell with view routing (home/chat)
-│       ├── home.tsx          # Home screen (logo + prompt)
-│       ├── chat.tsx          # Chat screen (message list + input)
-│       └── theme.ts          # Theme constants (colors, logo, tagline)
+│   │   └── types.ts          # Shared type definitions
 ├── dist/
 │   └── nimbl.js              # Bundled OpenTUI TUI output
 ├── build.ts                  # Bun.build() with Solid transform plugin
@@ -200,14 +193,14 @@ NIMBL/
 ├── package.json, tsconfig.json, vitest.config.ts, AGENTS.md, bunfig.toml
 ```
 
-### 5.2 Three Parallel Interfaces
+### 5.2 Interface Evolution
 
-The project has evolved through three UI approaches, all still present in the repo:
+The project evolved through three UI approaches. Only OpenTUI remains supported:
 
 | Interface | File(s) | Framework | Status | Run Command |
 |-----------|---------|-----------|--------|-------------|
-| **REPL** | `src/index.ts` | readline (native) | Legacy, functional | `bun run dev` |
-| **Ink TUI** | `src/tui.tsx` + `src/tui/` | Ink 5, React 18 | Legacy, functional | `bun run tui` |
+| **REPL** | Removed | readline (native) | Historical prototype | — |
+| **Ink TUI** | Removed | Ink 5, React 18 | Historical prototype | — |
 | **OpenTUI TUI** | `src/tui-opencode.tsx` | OpenTUI 0.4.5, SolidJS 1.9.10 | **Current primary** | `bun run nimbl` |
 
 The `nimbl` script builds the OpenTUI TUI with `build.ts`, then runs the bundled output:
@@ -267,7 +260,7 @@ core/api.ts  ──►  sendChat(text, config)
 TUI renders response in scrollable message list
     |
     v
-estimateSavings(inputTokens, outputTokens)  ──►  token stats in status bar
+estimateReferenceCost(inputTokens, outputTokens)  ──►  reference-cost stats in status bar
 ```
 
 ### 5.5 Error Handling
@@ -346,9 +339,9 @@ The backend expanded from a simple sendChat wrapper to a full agent system with:
 
 See `src/core/agent.ts` (421 lines, the largest backend module) for the full agent implementation.
 
-### 6.5 Why Both TUIs Exist
+### 6.5 Sole Supported TUI
 
-The Ink TUI (`src/tui/`) remains as a stable fallback and reference. The OpenTUI TUI (`src/tui-opencode.tsx`) is the active development target (580 lines, fully featured). Both call the same `core/api.ts` and `config.ts`, while the agent system is used exclusively by the OpenTUI TUI's `send()` function.
+The divergent Ink and readline implementations were removed. `src/tui-opencode.tsx` is the sole supported frontend and uses the full agent, session, permission, and context systems.
 
 ---
 
@@ -418,14 +411,9 @@ barText:    #b4c8be  —  Status bar text
 
 All colors are 6-digit hex. No RGBA (8-digit) hex — causes native crash via Bun FFI.
 
-### 7.4 Ink TUI (Legacy)
+### 7.4 Historical Ink Prototype
 
-The Ink TUI at `src/tui/` has a different layout:
-- Centered home screen with logo + input
-- Message bubbles with `backgroundColor` styling
-- Static message rendering (no scrollbox — uses Ink's `Static` component)
-- Label-based message headers ("You" / "NIMBL")
-- Emoji indicators (🔹 for prompt, ⚙️ for loading)
+The removed Ink prototype informed the early layout but is not a supported runtime or dependency.
 
 ---
 
@@ -441,10 +429,6 @@ The Ink TUI at `src/tui/` has a different layout:
 | `@opentui/keymap` | 0.4.5 | Keyboard input handling |
 | `@opentui/solid` | 0.4.5 | SolidJS binding for OpenTUI (JSX + reconciler) |
 | `solid-js` | 1.9.10 | Reactive UI framework |
-| `ink` | 5 | React-based TUI framework (legacy) |
-| `react` | 18 | React (for Ink TUI, legacy) |
-| `react-reconciler` | 0.29 | React reconciler (Ink dep) |
-| `ink-text-input` | ^6.0.0 | Text input component for Ink (legacy) |
 
 ### 8.2 Dev Dependencies
 
@@ -453,7 +437,6 @@ The Ink TUI at `src/tui/` has a different layout:
 | `typescript` | ^7.0.2 | TypeScript compiler |
 | `bun-types` | ^1.3.14 | Bun type definitions |
 | `vitest` | ^4.1.10 | Test runner |
-| `@types/react` | 18 | React type definitions (for Ink TUI) |
 
 ### 8.3 `bunfig.toml` (if present)
 
@@ -521,7 +504,7 @@ The `@/*` path alias works at runtime because Bun resolves it natively. However,
 
 | File | Covers | Assertions |
 |------|--------|-----------|
-| `tests/api.test.ts` | `estimateSavings()` — cost calculation accuracy, scaling, zero-token edge case | 6 |
+| `tests/api.test.ts` | `estimateReferenceCost()` — reference calculation accuracy, scaling, zero-token edge case | 6 |
 | `tests/commands.test.ts` | `loadProjectCommands()` + `expandCommand()` — markdown frontmatter, argument substitution | 3 |
 | `tests/config.test.ts` | `resolveConfig()` — default provider, overrides, API key resolution, missing key error | 7 |
 | `tests/context.test.ts` | `compressCode()` — structure preservation; `selectProjectContextWithBudget()` — budget capping, LRU cache | 3 |
@@ -566,13 +549,13 @@ Using GPT-4o as baseline:
 | Input (prompt) | $2.50 |
 | Output (completion) | $10.00 |
 
-NIMBL's `estimateSavings()` function compares actual token usage against GPT-4o pricing:
+NIMBL's `estimateReferenceCost()` function applies fixed GPT-4o reference pricing to token usage. It does not calculate actual cost or savings:
 
 ```typescript
 const costUsd = prompt * 2.5e-6 + completion * 1e-5
 ```
 
-### 11.2 Actual Usage (Measured)
+### 11.2 Illustrative Estimates (Unmeasured)
 
 | Task Type | Tokens/Task | Cost/Task (GPT-4o) | NIMBL Cost |
 |-----------|-------------|---------------------|------------|
@@ -582,17 +565,11 @@ const costUsd = prompt * 2.5e-6 + completion * 1e-5
 | Code generation | ~1K–5K | ~$0.01–0.05 | ~$0.003–0.015 |
 | Multi-turn session | ~3K–30K | ~$0.03–0.30 | ~$0.01–0.09 |
 
-Using free/zero-cost providers (Pollinations, LLM7, Kilo, Ollama), the actual cost is $0.00.
+These estimates are not benchmark results. Raw runs, task definitions, model versions, sample sizes, and quality scores must be collected before publishing measured usage.
 
-### 11.3 Savings vs Competitors
+### 11.3 Comparative Savings
 
-| Tool | Monthly Tokens | Cost/Month | vs NIMBL (free tier) |
-|------|---------------|------------|---------------------|
-| Cursor | ~20M | $50–$200 | ∞ cheaper |
-| Claude Code | ~15M | $20–$100 | ∞ cheaper |
-| GitHub Copilot | ~10M | $10–$39 | ∞ cheaper |
-| **NIMBL (free provider)** | **Unlimited** | **$0.00** | **—** |
-| **NIMBL (paid provider)** | **~20M** | **~$0.20–$2.00** | **100x–500x cheaper** |
+No comparative savings claim is currently supported. A valid comparison requires a fixed task corpus, equivalent model quality targets, complete token accounting, current provider prices, latency data, and published raw results.
 
 ---
 
@@ -658,36 +635,17 @@ NIMBL does **not** ship a custom multi-provider aggregation system. Instead, it 
 
 Provider selection via CLI flag `--provider`, in-TUI picker, or automatic routing based on prompt keywords. Default is FreeLLMAPI. See `src/core/providers.ts` for the full definitions.
 
-### 13.2 Default API Keys
+### 13.2 API Keys
 
-The codebase contains hardcoded default API keys in `src/core/provider-defaults.ts`:
-
-```typescript
-export const DEFAULTS = {
-  primary: {
-    provider: "freellmapi",
-    model: "auto",
-    baseURL: "http://localhost:3001/v1",
-    apiKey: "freellmapi-...",
-  },
-  fallback: {
-    provider: "openrouter",
-    model: "deepseek/deepseek-v4-pro",
-    baseURL: "https://openrouter.ai/api/v1",
-    apiKey: "sk-or-v1-...",
-  },
-} as const
-```
-
-These are development convenience defaults. Production use should set `FREELLMAPI_KEY` or `OPENROUTER_KEY` environment variables.
+NIMBL does not ship provider credentials. Hosted-provider keys come from CLI overrides or documented environment variables. Local connectors use their configured local endpoints.
 
 ### 13.3 Adding a New Provider
 
-1. Add case to `providerToBaseURL()` in `src/core/api.ts`
-2. Add env var handling in `src/config.ts` (optional)
-3. Document in README
+1. Add a typed definition to `src/core/providers.ts`.
+2. Add configuration tests for its environment key and model defaults.
+3. Document setup in README.
 
-Since the Vercel AI SDK handles OpenAI-compatible endpoints generically, any provider with an OpenAI-compatible API works.
+The Vercel AI SDK supports OpenAI-compatible endpoints generically, but NIMBL currently accepts providers from its static registry rather than arbitrary user-defined endpoints.
 
 ### 13.4 Why Not Multi-Provider Aggregation?
 
@@ -841,8 +799,7 @@ Rendered in forest green (`#06402b`) on black (`#0a0a0a`).
 
 ### 16.2 Technical Debt
 
-- Two TUI codebases (Ink + OpenTUI) to maintain
-- `src/index.ts` (REPL) and `src/tui.tsx` (Ink) are legacy but maintained
+- Session storage still needs locking, schema migrations, and recovery tooling
 - Patched `node_modules` makes `bun install` a two-step process (install → build)
 - No automated tests for TUI components (OpenTUI test utilities pending)
 - Stale compiled `.js` files in source tree can cause confusing test failures
@@ -862,7 +819,7 @@ Rendered in forest green (`#06402b`) on black (`#0a0a0a`).
 - Config file system (nimbl.jsonc)
 
 **Long term:**
-- Desktop app (Electron reusing Ink/OpenTUI)
+- Desktop app reusing shared NIMBL core services
 - Web interface
 - IDE plugins (VS Code, JetBrains)
 - Offline-first mode (local Ollama)

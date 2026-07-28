@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { preparePromptContext } from "@/core/prompt-context"
@@ -13,5 +13,29 @@ describe("prompt context", () => {
     expect(result.commands).toEqual(["echo check"])
     expect(result.text).toContain("Relevant project note")
     expect(result.text).toContain("User-requested command output")
+  })
+
+  it("rejects references that escape through a symlink", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-prompt-root-"))
+    const outside = mkdtempSync(join(tmpdir(), "nimbl-prompt-outside-"))
+    writeFileSync(join(outside, "secret.txt"), "outside")
+    symlinkSync(outside, join(root, "linked"), "junction")
+
+    await expect(preparePromptContext({
+      root,
+      text: "Review @linked/secret.txt",
+      runCommand: async () => "",
+    })).rejects.toThrow("outside this project")
+  })
+
+  it("blocks environment-file variants", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-prompt-env-"))
+    writeFileSync(join(root, ".env.production"), "SECRET=value")
+
+    await expect(preparePromptContext({
+      root,
+      text: "Review @.env.production",
+      runCommand: async () => "",
+    })).rejects.toThrow("Environment files")
   })
 })

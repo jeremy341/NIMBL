@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs"
-import { join } from "node:path"
+import { resolveUnprotectedProjectPath } from "./project-path"
 
 export interface ContextCandidate {
   path: string
@@ -39,14 +39,15 @@ export async function selectProjectContextWithBudget(root: string, prompt: strin
   for await (const path of new Bun.Glob("**/*.{ts,tsx,js,jsx,json,md,py,go,rs}").scan({ cwd: root, onlyFiles: true })) {
     if (path.includes("node_modules/") || path.includes(".git/") || path.includes("dist/")) continue
     try {
-      const content = readFileSync(join(root, path), "utf8")
+      const target = resolveUnprotectedProjectPath(root, path)
+      const content = readFileSync(target.full, "utf8")
       const lower = content.toLowerCase()
       const hitTerms = query.filter((term) => lower.includes(term))
       if (!hitTerms.length) continue
       const score = hitTerms.length * 10 + (path.toLowerCase().split(/[/.\\_-]/).some((part) => query.includes(part)) ? 6 : 0)
       const hit = content.split("\n").findIndex((line) => hitTerms.some((term) => line.toLowerCase().includes(term)))
       const excerpt = compressCode(content.split("\n").slice(Math.max(0, hit - 6), hit + 24).join("\n"), 36)
-      matches.push({ path: path.replaceAll("\\", "/"), score, excerpt, reason: `matches ${hitTerms.join(", ")}` })
+      matches.push({ path: target.rel, score, excerpt, reason: `matches ${hitTerms.join(", ")}` })
     } catch { /* Ignore unreadable or binary files. */ }
   }
   const items: ContextCandidate[] = []
