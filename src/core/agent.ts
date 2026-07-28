@@ -4,14 +4,17 @@ import { stepCountIs, streamText, tool } from "ai"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { z } from "zod"
-import { getProvider } from "./providers"
-import { selectProjectContextWithBudget } from "./context"
+import { compatibilityIssues, getProvider, resolveModel, type ProviderModel } from "./providers"
+import { selectProjectContextWithBudget, type ProjectContextIndex } from "./context"
+import type { ContextRetrievalTelemetry } from "./context"
 import { teachingPrompt, type LearningState } from "./learning"
 import type { PermissionSettings } from "./settings"
 import { permissionExplanation, permissionFor } from "./permissions"
 import { ASSISTANT_RESPONSE_STYLE, stripEmojis } from "./response-style"
 import { resolveProjectPath, resolveUnprotectedProjectPath } from "./project-path"
 import { runShellCommand } from "./shell"
+import { fitRequestToBudget, type RequestBudgetBreakdown } from "./request-budget"
+import { countTextTokens } from "./tokenizers"
 
 export type AgentMode = "build" | "plan" | "explain" | "learn"
 export type ApprovalChoice = "once" | "always" | "reject"
@@ -64,6 +67,7 @@ export interface AgentRunOptions {
   abortSignal?: AbortSignal
   permissions?: PermissionSettings
   contextWindow?: number
+  contextIndex?: ProjectContextIndex
   onRetry?: (retry: { attempt: number; message: string }) => void
   retryDelayMs?: number
 }
@@ -71,7 +75,25 @@ export interface AgentRunOptions {
 export interface AgentRunResult {
   text: string
   reasoning: string
-  usage: { inputTokens: number; outputTokens: number; totalTokens: number }
+  usage: {
+    inputTokens: number
+    outputTokens: number
+    totalTokens: number
+    noCacheTokens?: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+    textTokens?: number
+    reasoningTokens?: number
+  }
+  attempts: number
+  latencyMs: number
+  finishReason?: string
+  rawFinishReason?: string
+  callId?: string
+  responseId?: string
+  requestId?: string
+  budget: RequestBudgetBreakdown
+  retrieval: ContextRetrievalTelemetry
 }
 
 const MAX_FILE_BYTES = 48_000
@@ -99,9 +121,20 @@ function modePrompt(mode: AgentMode) {
 
 function createModel(config: Pick<AgentRunOptions, "provider" | "model" | "apiKey">) {
   const provider = getProvider(config.provider)
-  return provider.protocol === "anthropic"
-    ? createAnthropic({ apiKey: config.apiKey, baseURL: provider.baseURL })(config.model)
-    : createOpenAI({ baseURL: provider.baseURL, apiKey: config.apiKey, headers: provider.headers })(config.model)
+  if (provider.protocol === "anthropic") return createAnthropic({ apiKey: config.apiKey, baseURL: provider.baseURL })(config.model)
+  const client = createOpenAI({ baseURL: provider.baseURL, apiKey: config.apiKey, headers: provider.headers })
+  return provider.id === "openai" ? client.responses(config.model) : client.chat(config.model)
+}
+
+function requestModel(options: AgentRunOptions): ProviderModel {
+  return resolveModel(options.provider, options.model, options.contextWindow)
+}
+
+function budgetPromptParts(text: string) {
+  const markers = ["\n\nAttached file:", "\n\nUser-requested command output"]
+  const indexes = markers.map((marker) => text.indexOf(marker)).filter((index) => index >= 0)
+  const start = indexes.length ? Math.min(...indexes) : -1
+  return start < 0 ? { history: text, attachment: "" } : { history: text.slice(0, start), attachment: text.slice(start) }
 }
 
 function toolID() { return Math.random().toString(36).slice(2, 10) }
@@ -117,11 +150,17 @@ function retryable(error: unknown) {
 function wait(ms: number, signal?: AbortSignal) {
   if (signal?.aborted) return Promise.reject(new Error("Interrupted by user."))
   return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, ms)
-    signal?.addEventListener("abort", () => {
+    const cleanup = () => signal?.removeEventListener("abort", onAbort)
+    const timer = setTimeout(() => {
+      cleanup()
+      resolve()
+    }, ms)
+    const onAbort = () => {
       clearTimeout(timer)
+      cleanup()
       reject(new Error("Interrupted by user."))
-    }, { once: true })
+    }
+    signal?.addEventListener("abort", onAbort, { once: true })
   })
 }
 
@@ -174,7 +213,10 @@ function safeURL(value: string) {
 function skillFile(root: string, name: string) {
   if (!/^[a-z0-9][a-z0-9_-]*$/i.test(name)) throw new Error("Skill names may contain letters, numbers, _ and - only.")
   const file = resolve(root, ".nimbl", "skills", name, "SKILL.md")
-  return resolveUnprotectedProjectPath(root, file).full
+  const target = resolveProjectPath(root, file)
+  const expected = `.nimbl/skills/${name}/SKILL.md`
+  if (target.rel !== expected) throw new Error("Skill must resolve to its canonical project skill file.")
+  return target.full
 }
 
 function patchPaths(root: string, patch: string) {
@@ -417,31 +459,64 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     }),
   }
 
-  const history = options.messages.slice(-30).map((message) => ({ role: message.role, content: message.text }))
-  const priorTokens = contextEstimate(options.messages, options.summary || "")
-  // Keep space for the model response, but never impose a separate NIMBL context cap.
-  // The selected model's context window is the actual limit.
-  const contextBudgetChars = Math.max(0, Math.floor(((options.contextWindow || 128_000) - priorTokens - 8_000) * 4))
-  const selectedContext = await selectProjectContextWithBudget(options.root, options.messages.at(-1)?.text || "", 12, contextBudgetChars)
-  const system = [
+  const modelDefinition = requestModel(options)
+  const availableTools = Object.fromEntries(Object.entries(tools).filter(([name]) => MODE_TOOLS[options.mode].includes(name as PermissionRequest["tool"])))
+  const issues = compatibilityIssues(modelDefinition, { tools: Object.keys(availableTools).length > 0, reasoning: false, imageInput: false, structuredOutput: false, streaming: true, minimumContextTokens: 1 })
+  if (issues.length) throw new Error(`${modelDefinition.name} is incompatible with this request: ${issues.join(", ")}.`)
+  const rawHistory = options.messages.slice(-30)
+  const splitHistory = rawHistory.map((message) => budgetPromptParts(message.text))
+  const selectedContext = await selectProjectContextWithBudget(options.root, options.messages.at(-1)?.text || "", 12, Math.min(modelDefinition.contextWindow * 4, 500_000), { index: options.contextIndex })
+  const systemInstructions = [
     "You are NIMBL, a token-efficient coding companion. Work inside the current project using tools before making claims about its code.",
     ASSISTANT_RESPONSE_STYLE,
     modePrompt(options.mode),
     "Use read, glob, grep, and project-local skills selectively. Keep tool output focused. Use todowrite for multi-step work. Use question only when a user decision is necessary. Use edit for focused changes, write for new or whole-file content, and apply_patch only for a valid unified diff.",
     "Current permission policy: " + ["read", "glob", "grep", "edit", "write", "bash", "webfetch", "skill", "question"].map((name) => `${name}=${permissionExplanation(options.permissions, { tool: name })}`).join(", "),
     teachingPrompt(options.learning || { concepts: {} }),
-    projectInstructions(options.root),
-    options.summary ? "Session summary:\n" + options.summary : "",
-    selectedContext.items.length ? `Relevant project context (${selectedContext.estimatedTokens} estimated tokens${selectedContext.cacheHit ? ", cache hit" : ""}; selected locally to reduce token use):\n` + selectedContext.items.map((item) => `# ${item.path} — ${item.reason}\n${item.excerpt}`).join("\n\n") : "",
-  ].filter(Boolean).join("\n\n")
+  ]
+  const projectInstructionText = projectInstructions(options.root)
+  const retrievalLowToHigh = selectedContext.items.map((item) => `# ${item.path} — ${item.reason}\n${item.excerpt}`).reverse()
+  const fitted = fitRequestToBudget(modelDefinition, {
+    systemInstructions,
+    toolSchemas: Object.entries(availableTools).map(([name, value]) => {
+      const definition = value as any
+      let schema = "{}"
+      try { schema = JSON.stringify(z.toJSONSchema(definition.inputSchema)) } catch { /* Conservative safety margin covers unsupported schema conversion. */ }
+      return `${name}: ${String(definition.description || "tool")}\n${schema}`
+    }),
+    history: splitHistory.map((part) => part.history),
+    summary: options.summary ? [options.summary] : [],
+    attachments: splitHistory.map((part) => part.attachment).filter(Boolean),
+    projectInstructions: projectInstructionText ? [projectInstructionText] : [],
+    retrieval: retrievalLowToHigh,
+    outputReservation: Math.min(8_000, modelDefinition.maxOutputTokens),
+  })
+  if (!fitted.budget.fits) throw new Error(`Request requires ${fitted.budget.requestTotal} tokens but ${modelDefinition.name} supports ${modelDefinition.contextWindow}. Reduce attachments or choose a larger model.`)
+  const history = rawHistory.slice(rawHistory.length - fitted.history.length).map((message) => ({ role: message.role, content: message.text }))
+  const retrievalText = fitted.retrieval.length ? `Relevant project context (${fitted.budget.retrieval} ${fitted.budget.quality === "exact" ? "tokens" : "estimated tokens"}; selected locally):\n${[...fitted.retrieval].reverse().join("\n\n")}` : ""
+  const system = [...systemInstructions, projectInstructionText, options.summary ? "Session summary:\n" + options.summary : "", retrievalText].filter(Boolean).join("\n\n")
 
   let text = ""
   let reasoning = ""
-  const availableTools = Object.fromEntries(Object.entries(tools).filter(([name]) => MODE_TOOLS[options.mode].includes(name as PermissionRequest["tool"])))
+  const startedAt = Date.now()
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     attemptActivity = false
     try {
-      const result = streamText({ model: createModel(options), system, messages: history as any, tools: availableTools, stopWhen: stepCountIs(MAX_TOOL_STEPS), abortSignal: options.abortSignal })
+      const result = streamText({
+        model: createModel(options),
+        system,
+        messages: history as any,
+        tools: availableTools,
+        maxOutputTokens: fitted.budget.outputReservation,
+        prepareStep: ({ messages, instructions }) => {
+          const dynamicTokens = countTextTokens(JSON.stringify({ instructions, messages }), modelDefinition).tokens
+          const projected = dynamicTokens + fitted.budget.toolSchemas + fitted.budget.outputReservation + fitted.budget.safetyMargin
+          if (projected > modelDefinition.contextWindow) throw new Error(`Tool-loop context reached ${projected} tokens, above ${modelDefinition.name}'s ${modelDefinition.contextWindow}-token window.`)
+          return {}
+        },
+        stopWhen: stepCountIs(MAX_TOOL_STEPS),
+        abortSignal: options.abortSignal,
+      })
       for await (const part of result.fullStream) {
         if (part.type === "text-delta") {
           const delta = stripEmojis(part.text)
@@ -453,7 +528,35 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         }
       }
       const usage = await result.usage
-      return { text, reasoning, usage: { inputTokens: usage.inputTokens || 0, outputTokens: usage.outputTokens || 0, totalTokens: usage.totalTokens || 0 } }
+      const inputTokens = usage.inputTokens || 0
+      const outputTokens = usage.outputTokens || 0
+      const inputDetails = usage.inputTokenDetails || {}
+      const outputDetails = usage.outputTokenDetails || {}
+      const finalStep = result.finalStep ? await result.finalStep : undefined
+      if (!text && reasoning) text = reasoning
+      return {
+        text,
+        reasoning,
+        usage: {
+          inputTokens,
+          outputTokens,
+          totalTokens: usage.totalTokens ?? inputTokens + outputTokens,
+          noCacheTokens: inputDetails.noCacheTokens,
+          cacheReadTokens: inputDetails.cacheReadTokens,
+          cacheWriteTokens: inputDetails.cacheWriteTokens,
+          textTokens: outputDetails.textTokens,
+          reasoningTokens: outputDetails.reasoningTokens,
+        },
+        attempts: attempt,
+        latencyMs: Date.now() - startedAt,
+        finishReason: finalStep?.finishReason,
+        rawFinishReason: finalStep?.rawFinishReason,
+        callId: finalStep?.callId,
+        responseId: finalStep?.response.id,
+        requestId: finalStep?.response.headers?.["x-request-id"],
+        budget: fitted.budget,
+        retrieval: selectedContext.telemetry,
+      }
     } catch (error) {
       if (attemptActivity || attempt === MAX_ATTEMPTS || options.abortSignal?.aborted || !retryable(error)) throw error
       const message = error instanceof Error ? error.message : String(error)

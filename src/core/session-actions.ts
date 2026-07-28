@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname } from "node:path"
 import type { StoredSession } from "./sessions"
 import { resolveUnprotectedProjectPath } from "./project-path"
+import type { ProviderModel } from "./providers"
+import { countTextTokens } from "./tokenizers"
 
 export interface SnapshotFileChange {
   path: string
@@ -111,16 +113,53 @@ export function redoSnapshot<T extends SessionWithSnapshots>(root: string, sessi
   }
 }
 
-export function compactSession<T extends StoredSession>(session: T, keep = 12): T {
-  const older = session.messages.slice(0, -keep)
-  const summary = older
+function unique(values: string[]) { return [...new Set(values.filter(Boolean))] }
+
+export function shouldCompactSession(session: StoredSession, model: ProviderModel, threshold = 0.82) {
+  const text = [session.compaction?.narrative, ...session.messages.map((message) => message.agentText || message.text)].filter(Boolean).join("\n")
+  return countTextTokens(text, model).tokens >= model.contextWindow * threshold
+}
+
+export function compactSession<T extends StoredSession>(session: T, options: number | { keep?: number; now?: number; learningState?: string[] } = {}): T {
+  const keep = typeof options === "number" ? options : options.keep ?? 12
+  const now = typeof options === "number" ? Date.now() : options.now ?? Date.now()
+  const learningState = typeof options === "number" ? [] : options.learningState || []
+  if (keep < 1) throw new Error("Compaction must retain at least one recent message.")
+  if (session.messages.length <= keep) return session
+  let recentStart = Math.max(0, session.messages.length - keep)
+  const nextUser = session.messages.findIndex((message, index) => index >= recentStart && message.role === "user")
+  if (nextUser >= 0) recentStart = nextUser
+  const older = session.messages.slice(0, recentStart)
+  if (!older.length) return session
+  const previous = session.compaction
+  const excerpts = older
     .filter((message) => message.role === "user" || message.role === "assistant")
-    .map((message) => `${message.role}: ${message.text.replace(/\s+/g, " ").slice(0, 240)}`)
-    .join("\n")
+    .map((message) => `${message.role}: ${message.text.replace(/\s+/g, " ").slice(0, 320)}`)
+  const decisions = older.filter((message) => /\b(decision|decided|choose|chose|will use)\b/i.test(message.text)).map((message) => message.text.trim())
+  const constraints = older.filter((message) => /\b(must|never|required?|constraint|do not|don't)\b/i.test(message.text)).map((message) => message.text.trim())
+  const errors = older.filter((message) => message.role === "error" || message.error || message.parts?.some((part) => part.type === "tool" && part.state === "failed")).map((message) => message.error || message.text).filter(Boolean)
+  const unresolvedTasks = older.flatMap((message) => message.parts?.filter((part) => part.type === "tool" && part.tool === "todowrite").flatMap((part) => part.type === "tool" ? (part.output || "").split("\n").filter((line) => line.startsWith("[ ]") || line.startsWith("[>]")) : []) || [])
+  const modifiedFiles = unique([...(previous?.modifiedFiles || []), ...(session.snapshots || []).flatMap((snapshot) => snapshot.changes?.map((change) => change.path) || [snapshot.path])])
+  const archivedMessages = [...(session.archivedMessages || []), ...older].filter((message, index, all) => all.findIndex((item) => item.id === message.id) === index)
+  const narrative = [previous?.narrative, ...excerpts].filter(Boolean).join("\n").slice(0, 12_000)
   return {
     ...session,
-    summary: [session.summary, summary].filter(Boolean).join("\n").slice(-8000),
-    messages: session.messages.slice(-keep),
-    updated: Date.now(),
+    summary: undefined,
+    compaction: {
+      version: 1,
+      narrative,
+      decisions: unique([...(previous?.decisions || []), ...decisions]),
+      constraints: unique([...(previous?.constraints || []), ...constraints]),
+      modifiedFiles,
+      unresolvedTasks: unique([...(previous?.unresolvedTasks || []), ...unresolvedTasks]),
+      relevantErrors: unique([...(previous?.relevantErrors || []), ...errors]),
+      learningState: unique([...(previous?.learningState || []), ...learningState]),
+      sourceMessageIds: unique([...(previous?.sourceMessageIds || []), ...older.map((message) => message.id)]),
+      sourceMessageCount: (previous?.sourceMessageCount || 0) + older.length,
+      compactedAt: now,
+    },
+    archivedMessages,
+    messages: session.messages.slice(recentStart),
+    updated: now,
   }
 }

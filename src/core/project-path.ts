@@ -12,6 +12,34 @@ export function isProtectedEnvironmentPath(path: string) {
   )
 }
 
+const PROTECTED_NAMES = new Set([
+  ".npmrc",
+  ".pypirc",
+  ".netrc",
+  ".git-credentials",
+  "credentials.json",
+  "service-account.json",
+  "id_rsa",
+  "id_ed25519",
+  "id_ecdsa",
+  "id_dsa",
+])
+
+const PROTECTED_EXTENSIONS = [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"]
+
+export function isProtectedProjectPath(path: string) {
+  const normalized = path.replaceAll("\\", "/").toLowerCase()
+  const segments = normalized.split("/")
+  const name = segments.at(-1) || ""
+  return isProtectedEnvironmentPath(normalized)
+    || segments.includes(".git")
+    || segments[0] === ".nimbl"
+    || segments.includes(".ssh")
+    || segments.includes(".aws")
+    || PROTECTED_NAMES.has(name)
+    || PROTECTED_EXTENSIONS.some((extension) => name.endsWith(extension))
+}
+
 export function resolveProjectPath(root: string, path: string) {
   const canonicalRoot = realpathSync(resolve(root))
   const lexicalTarget = resolve(canonicalRoot, path)
@@ -33,8 +61,7 @@ export function resolveProjectPath(root: string, path: string) {
 
 export function resolveUnprotectedProjectPath(root: string, path: string) {
   const target = resolveProjectPath(root, path)
-  if (isProtectedEnvironmentPath(target.rel)) {
-    throw new Error("Environment files are blocked by NIMBL's default safety policy.")
-  }
+  if (isProtectedEnvironmentPath(target.rel)) throw new Error("Environment files are blocked by NIMBL's default safety policy.")
+  if (isProtectedProjectPath(target.rel)) throw new Error(`Path "${target.rel}" is blocked by NIMBL's default safety policy.`)
   return target
 }

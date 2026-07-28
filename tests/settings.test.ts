@@ -5,6 +5,7 @@ import { routeProvider } from "@/core/routing"
 describe("provider routing", () => {
   it("prefers a local provider for privacy-sensitive prompts", () => {
     expect(routeProvider("keep this private", DEFAULT_SETTINGS)?.local).toBe(true)
+    expect(routeProvider("write a secretary class", DEFAULT_SETTINGS)).toBeUndefined()
   })
 })
 

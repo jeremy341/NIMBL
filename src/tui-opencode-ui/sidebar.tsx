@@ -231,7 +231,7 @@ export function Sidebar(props: SidebarProps) {
             </text>
             <text fg={theme.textMuted}>{tokens().toLocaleString()} tokens</text>
             <text fg={theme.textMuted}>{percent()}% used</text>
-            <text fg={theme.textMuted}>{money.format(props.cost)} GPT-4o reference</text>
+            <text fg={theme.textMuted}>{money.format(props.cost)} reference estimate</text>
           </box>
 
           <Show when={showTodos()}>

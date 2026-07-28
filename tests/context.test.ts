@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { clearContextCache, compressCode, selectProjectContextWithBudget } from "@/core/context"
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { clearContextCache, compressCode, createProjectContextIndex, selectProjectContextWithBudget } from "@/core/context"
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -21,5 +21,108 @@ describe("context selection budget", () => {
     expect(first.items[0]?.excerpt.length).toBeLessThanOrEqual(80)
     expect(first.estimatedTokens).toBeLessThanOrEqual(20)
     expect(second.cacheHit).toBe(true)
+    expect(first.telemetry.selectedFiles).toBe(1)
+    expect(second.telemetry.cacheHit).toBe(true)
+  })
+
+  it("applies nested gitignore rules and retains explicitly unignored files", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-context-ignore-"))
+    mkdirSync(join(root, "src"), { recursive: true })
+    writeFileSync(join(root, ".gitignore"), "ignored.ts\nsrc/*\n!src/keep.ts\n")
+    writeFileSync(join(root, "ignored.ts"), "export const secretFeature = true")
+    writeFileSync(join(root, "src", "keep.ts"), "export const feature = true")
+    const index = createProjectContextIndex(root)
+    const result = await index.select("feature")
+    expect(result.items.map((item) => item.path)).toEqual(["src/keep.ts"])
+    expect(result.telemetry.ignoredFiles).toBeGreaterThan(0)
+    index.close()
+  })
+
+  it("applies nested gitignore rules relative to their directory", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-context-nested-ignore-"))
+    mkdirSync(join(root, "packages", "app"), { recursive: true })
+    writeFileSync(join(root, "packages", ".gitignore"), "generated.ts\n")
+    writeFileSync(join(root, "packages", "generated.ts"), "export const feature = 'ignored'")
+    writeFileSync(join(root, "packages", "app", "feature.ts"), "export const feature = 'kept'")
+    const index = createProjectContextIndex(root)
+    const result = await index.select("feature")
+    expect(result.items.map((item) => item.path)).toEqual(["packages/app/feature.ts"])
+    index.close()
+  })
+
+  it("invalidates selections when indexed files change", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-context-index-"))
+    const file = join(root, "feature.ts")
+    writeFileSync(file, "export const feature = 'one'")
+    const index = createProjectContextIndex(root)
+    const first = await index.select("feature")
+    const cached = await index.select("feature")
+    writeFileSync(file, "export const feature = 'two'")
+    index.invalidate("feature.ts")
+    const refreshed = await index.select("feature")
+    expect(cached.cacheHit).toBe(true)
+    expect(refreshed.cacheHit).toBe(false)
+    expect(refreshed.telemetry.indexGeneration).toBeGreaterThan(first.telemetry.indexGeneration)
+    expect(refreshed.items[0]?.excerpt).toContain("two")
+    index.close()
+  })
+
+  it("watches project changes without retaining the process after close", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-context-watch-"))
+    const file = join(root, "feature.ts")
+    writeFileSync(file, "export const feature = 'one'")
+    const index = createProjectContextIndex(root, { watch: true })
+    await index.select("feature")
+    writeFileSync(file, "export const feature = 'two'")
+    let refreshed
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      refreshed = await index.select("feature")
+      if (!refreshed.cacheHit) break
+    }
+    expect(refreshed?.cacheHit).toBe(false)
+    expect(refreshed?.items[0]?.excerpt).toContain("two")
+    index.close()
+  })
+
+  it("excludes protected and symlink-escaping files regardless of ignore rules", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-context-safe-"))
+    const outside = mkdtempSync(join(tmpdir(), "nimbl-context-outside-"))
+    mkdirSync(join(root, ".git"))
+    mkdirSync(join(root, ".nimbl"))
+    writeFileSync(join(root, ".git", "feature.ts"), "export const featureSecret = true")
+    writeFileSync(join(root, ".nimbl", "feature.ts"), "export const featureToken = true")
+    writeFileSync(join(outside, "outside.ts"), "export const feature = true")
+    symlinkSync(outside, join(root, "linked"), "junction")
+    const index = createProjectContextIndex(root)
+    const result = await index.select("feature")
+    expect(result.items).toEqual([])
+    expect(result.telemetry.ignoredFiles).toBeGreaterThan(0)
+    index.close()
+  })
+
+  it("prefers parser-backed declaration chunks and falls back for unsupported files", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-context-structural-"))
+    writeFileSync(join(root, "feature.ts"), "import { readFileSync } from 'node:fs'\nconst unrelated = 1\nexport function targetFeature(name: string) { return readFileSync(name, 'utf8') }\nconst after = 2")
+    writeFileSync(join(root, "feature.py"), "def target_feature(name):\n  return name")
+    const index = createProjectContextIndex(root)
+    const result = await index.select("target feature")
+    const typescript = result.items.find((item) => item.path === "feature.ts")
+    const python = result.items.find((item) => item.path === "feature.py")
+    expect(typescript?.excerpt).toContain("function targetFeature(name: string)")
+    expect(typescript?.excerpt).toContain("import { readFileSync }")
+    expect(typescript?.excerpt).not.toContain("const unrelated")
+    expect(typescript?.reason).toContain("structural lexical")
+    expect(python?.reason).toContain("lexical")
+    index.close()
+  })
+
+  it("supports an explicit project extension allowlist", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-context-extensions-"))
+    writeFileSync(join(root, "feature.txt"), "feature text")
+    const index = createProjectContextIndex(root, { extensions: ["txt"] })
+    const result = await index.select("feature")
+    expect(result.items.map((item) => item.path)).toEqual(["feature.txt"])
+    index.close()
   })
 })

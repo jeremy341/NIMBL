@@ -6,7 +6,6 @@ import { join } from "node:path"
 import { resolveConfig } from "@/config"
 import { estimateReferenceCost } from "@/core/api"
 import {
-  contextEstimate,
   runAgent,
   type AgentMessage,
   type AgentEvent,
@@ -14,6 +13,8 @@ import {
 } from "@/core/agent"
 import { expandCommand, loadProjectCommands } from "@/core/commands"
 import { ctrlCAction } from "@/core/ctrl-c"
+import { createProjectContextIndex } from "@/core/context"
+import { loadGlobalConfig, saveGlobalConfig } from "@/core/global-config"
 import { EXIT_CONFIRM_WINDOW_MS, registerExitPress } from "@/core/exit-guard"
 import { loadLearning, observeLearning, saveLearning } from "@/core/learning"
 import { preparePromptContext } from "@/core/prompt-context"
@@ -21,9 +22,13 @@ import { permissionFor } from "@/core/permissions"
 import {
   PROVIDERS,
   defaultModelFor,
+  localFallbackKey,
   modelContextWindow,
   providerApiKey,
+  resolveModel,
 } from "@/core/providers"
+import { checkProviderHealth } from "@/core/provider-health"
+import { estimateProviderCost } from "@/core/pricing"
 import { routeProvider } from "@/core/routing"
 import { findSession, latestSession, sessionEpilogue } from "@/core/session-lifecycle"
 import {
@@ -33,18 +38,25 @@ import {
   recordSnapshotGroup,
   redoSnapshot,
   renameSession,
+  shouldCompactSession,
   undoSnapshot,
 } from "@/core/session-actions"
 import {
   backupInvalidSessionStore,
   loadSessionStore,
+  lastRequestUsage,
   saveSessionStore,
+  sessionSummary,
+  sessionUsage,
+  SessionStoreConflictError,
+  SessionStoreLockedError,
   type SessionStore,
   type StoredMessage,
   type StoredSession,
 } from "@/core/sessions"
 import { loadSettings, saveSettings, type NimblSettings, type PermissionValue } from "@/core/settings"
 import { runShellCommand } from "@/core/shell"
+import { countTextTokens } from "@/core/tokenizers"
 import { finishAssistant, reduceAssistantEvents } from "@/core/transcript"
 import {
   win32DisableProcessedInput,
@@ -100,7 +112,7 @@ const BASE_COMMANDS: CommandOption[] = [
   { value: "fork", title: "Fork session", description: "Branch from this conversation", category: "Session" },
   { value: "pin", title: "Pin session", description: "Toggle the active pin", category: "Session" },
   { value: "delete", title: "Delete session", description: "Remove local conversation history", category: "Session" },
-  { value: "compact", title: "Compact", description: "Replace older messages with lossy excerpts", category: "Session" },
+  { value: "compact", title: "Compact", description: "Archive older turns into a structured summary", category: "Session" },
   { value: "clear", title: "Clear", description: "Clear the active transcript", category: "Session" },
   { value: "model", title: "Model", description: "Select a model", category: "Configuration", suggested: true },
   { value: "provider", title: "Provider", description: "Connect or select a provider", category: "Configuration", suggested: true },
@@ -230,17 +242,21 @@ function visibleMessages(session: StoredSession): ChatMessage[] {
 
 export function App() {
   const argv = process.argv
-  const config = resolveConfig(argv)
+  let globalConfig = loadGlobalConfig()
+  const config = resolveConfig(argv, globalConfig)
   const dimensions = useTerminalDimensions()
   const directory = process.cwd()
+  const contextIndex = createProjectContextIndex(directory, { watch: true })
   const [settings, setSettings] = createSignal<NimblSettings>(loadSettings(directory))
   const [learning, setLearning] = createSignal(loadLearning(directory))
   const projectCommands = loadProjectCommands(directory)
   const storeResult = loadSessionStore(directory)
   let recoveryNotice: string | undefined
+  let recoveryFingerprint: string | undefined
   let store: SessionStore | undefined
   if (storeResult.status === "valid") store = storeResult.store
   if (storeResult.status === "invalid") {
+    recoveryFingerprint = storeResult.fingerprint
     try {
       const backup = backupInvalidSessionStore(storeResult)
       recoveryNotice = `Invalid session data at ${storeResult.file} was preserved at ${backup}. Started a recovery session.`
@@ -267,6 +283,9 @@ export function App() {
   const explicitModel = flagValue(argv, "--model")
   const initialProvider = explicitProvider ? config.provider : store?.provider || config.provider
   const initialModel = explicitModel ? config.model : store?.model || (initialProvider === config.provider ? config.model : defaultModelFor(initialProvider))
+  let storeRevision = store?.revision ?? 0
+  let archivedSessions = store?.archived ?? []
+  let persistenceBlocked = false
 
   const [view, setView] = createSignal<"home" | "session">(resumed ? "session" : "home")
   const [sessions, setSessions] = createSignal(initialSessions)
@@ -310,14 +329,18 @@ export function App() {
   const currentQuestion = createMemo(() => questionQueue()[0])
   const uiSession = createMemo<ChatSession>(() => ({
     ...active(),
+    contextTokens: lastRequestUsage(active())?.inputContextTokens ?? lastRequestUsage(active())?.inputTokens ?? active().legacyUsage?.lastRequestTokens,
+    contextWindow: lastRequestUsage(active())?.contextWindow ?? active().legacyUsage?.contextWindow,
     messages: visibleMessages(active()),
   }))
   const contextText = createMemo(() => {
     const session = active()
-    if (!session.contextTokens) return undefined
-    const window = session.contextWindow || modelContextWindow(provider(), model())
-    const context = `${formatTokens(session.contextTokens)} (${Math.round((session.contextTokens / window) * 100)}%)`
-    return session.cost ? `${context} · $${session.cost.toFixed(4)}` : context
+    const latest = lastRequestUsage(session)
+    const tokens = latest?.inputContextTokens ?? latest?.inputTokens ?? session.legacyUsage?.lastRequestTokens
+    if (!tokens) return undefined
+    const window = latest?.contextWindow || session.legacyUsage?.contextWindow || modelContextWindow(provider(), model())
+    const context = `${formatTokens(tokens)} (${Math.round((tokens / window) * 100)}%)`
+    return latest?.referenceCostUsd ? `${context} · $${latest.referenceCostUsd.toFixed(4)}` : context
   })
 
   const configuredCommands = createMemo(() => ({ ...settings().customCommands, ...projectCommands }))
@@ -384,19 +407,36 @@ export function App() {
     })))
 
   function apiKey(providerID: string) {
-    return providerKeys()[providerID] || providerApiKey(providerID)
+    return providerKeys()[providerID] || providerApiKey(providerID) || globalConfig.providerKeys?.[providerID] || localFallbackKey(providerID) || ""
   }
 
   function persistNow() {
+    if (persistenceBlocked) return
     if (persistTimer) clearTimeout(persistTimer)
     persistTimer = undefined
-    saveSessionStore(directory, {
-      version: 1,
-      activeID: activeID(),
-      provider: provider(),
-      model: model(),
-      sessions: sessions(),
-    })
+    try {
+      const saved = saveSessionStore(directory, {
+        version: 2,
+        revision: storeRevision,
+        activeID: activeID(),
+        provider: provider(),
+        model: model(),
+        sessions: sessions(),
+        archived: archivedSessions,
+      }, { expectedRevision: storeRevision, recoveryFingerprint })
+      storeRevision = saved.revision
+      recoveryFingerprint = undefined
+      archivedSessions = saved.archived ?? []
+      if (saved.sessions.length !== sessions().length) setSessions(saved.sessions)
+    } catch (error) {
+      if (error instanceof SessionStoreConflictError) {
+        persistenceBlocked = true
+        showToast(error.message + " Automatic saving is paused to protect both versions.", "error", "Session conflict")
+        return
+      }
+      showToast(error instanceof Error ? error.message : String(error), "warning", "Session save delayed")
+      if (error instanceof SessionStoreLockedError) persistTimer = setTimeout(persistNow, 1000)
+    }
   }
 
   function schedulePersist() {
@@ -656,15 +696,27 @@ export function App() {
 
       const routed = routeProvider(prepared.text, settings())
       if (routed && (routed.local || apiKey(routed.id))) {
-        runProvider = routed.id
-        runModel = defaultModelFor(routed.id)
-        setProvider(runProvider)
-        setModel(runModel)
-        showToast(`Routed this request to ${routed.name}.`, "info")
+        const health = await checkProviderHealth(routed, apiKey(routed.id), { signal: controller.signal })
+        if (health.status === "healthy") {
+          runProvider = routed.id
+          runModel = defaultModelFor(routed.id)
+          setProvider(runProvider)
+          setModel(runModel)
+          showToast(`Routed this request to ${routed.name} (${health.latencyMs || 0}ms health check).`, "info")
+        } else {
+          showToast(`Skipped ${routed.name} routing: ${health.reason || health.status}.`, "warning")
+        }
       }
       const key = apiKey(runProvider)
       const definition = PROVIDERS.find((item) => item.id === runProvider)
       if (!definition?.local && !key) throw new Error(`Connect ${providerName(runProvider)} before sending a prompt.`)
+      const modelDefinition = resolveModel(runProvider, runModel, modelContextWindow(runProvider, runModel))
+      const beforeCompaction = sessions().find((item) => item.id === sessionID)!
+      if (beforeCompaction.messages.length > 8 && shouldCompactSession(beforeCompaction, modelDefinition)) {
+        const concepts = Object.entries(learning().concepts).map(([name, value]) => `${name}: confidence ${value.confidence.toFixed(2)}, encounters ${value.encounters}`)
+        setSession(sessionID, (value) => compactSession(value, { keep: 8, now: Date.now(), learningState: concepts }))
+        showToast("Older turns were compacted automatically to fit the model context.", "info")
+      }
 
       const user: StoredMessage = {
         id: id(),
@@ -700,9 +752,10 @@ export function App() {
         model: runModel,
         apiKey: key,
         mode: runAgentMode,
-        summary: current.summary,
+        summary: sessionSummary(current),
         learning: learning(),
         contextWindow: modelContextWindow(runProvider, runModel),
+        contextIndex,
         messages: history(current),
         abortSignal: controller.signal,
         permissions: settings().permissions,
@@ -717,14 +770,27 @@ export function App() {
       flushEvents()
       const completed = Date.now()
       const cost = estimateReferenceCost(result.usage.inputTokens, result.usage.outputTokens)
-      updateMessage(sessionID, assistantID, (message) => finishAssistant(message, completed))
-      setSession(sessionID, (value) => ({
-        ...value,
-        contextTokens: result.usage.totalTokens,
-        contextWindow: modelContextWindow(runProvider, runModel),
-        tokens: (value.tokens || 0) + result.usage.totalTokens,
-        cost: (value.cost || 0) + cost,
-        updated: completed,
+      const price = modelDefinition.pricing?.findLast((item) => new Date(item.effectiveFrom).getTime() <= completed)
+      const providerCost = price ? estimateProviderCost(price, result.usage) : undefined
+      updateMessage(sessionID, assistantID, (message) => ({
+        ...finishAssistant(message, completed),
+        usage: {
+          ...result.usage,
+          referenceCostUsd: cost,
+          providerCostUsd: providerCost?.usd,
+          pricingEffectiveFrom: providerCost?.effectiveFrom,
+          contextWindow: modelContextWindow(runProvider, runModel),
+          inputContextTokens: result.budget.inputTotal,
+          attempts: result.attempts,
+          latencyMs: result.latencyMs,
+          finishReason: result.finishReason,
+          rawFinishReason: result.rawFinishReason,
+          callId: result.callId,
+          responseId: result.responseId,
+          requestId: result.requestId,
+          budget: result.budget,
+          retrieval: result.retrieval,
+        },
       }))
       const nextLearning = observeLearning(learning(), prepared.text, true)
       setLearning(nextLearning)
@@ -820,12 +886,29 @@ export function App() {
   function connectProvider(key: string) {
     const pending = pendingProvider()
     if (!pending || !key.trim()) return
-    setProviderKeys((keys) => ({ ...keys, [pending.provider]: key.trim() }))
+    const apiKey = key.trim()
+    setProviderKeys((keys) => ({ ...keys, [pending.provider]: apiKey }))
+    globalConfig = {
+      ...globalConfig,
+      provider: pending.provider,
+      model: pending.model,
+      providerKeys: { ...globalConfig.providerKeys, [pending.provider]: apiKey },
+    }
+    try {
+      saveGlobalConfig(globalConfig)
+    } catch (error) {
+      setProvider(pending.provider)
+      setModel(pending.model)
+      schedulePersist()
+      closeDialog()
+      showToast(`Connected for this run, but could not save the key: ${error instanceof Error ? error.message : String(error)}`, "warning")
+      return
+    }
     setProvider(pending.provider)
     setModel(pending.model)
     schedulePersist()
     closeDialog()
-    showToast(`Connected ${providerName(pending.provider)} for this run.`, "success")
+    showToast(`Connected ${providerName(pending.provider)} and saved it for future runs.`, "success")
   }
 
   function deleteSession(closeAfter = true) {
@@ -932,8 +1015,9 @@ export function App() {
     if (name === "sidebar") return setSidebarMode(!sidebarVisible())
     if (name === "home") return setView("home")
     if (name === "compact") {
-      setSession(activeID(), (session) => compactSession(session))
-      return showToast("Older messages replaced with lossy excerpts.", "success")
+      const concepts = Object.entries(learning().concepts).map(([concept, value]) => `${concept}: confidence ${value.confidence.toFixed(2)}, encounters ${value.encounters}`)
+      setSession(activeID(), (session) => compactSession(session, { learningState: concepts }))
+      return showToast("Older turns archived into a structured summary.", "success")
     }
     if (name === "undo" || name === "redo") {
       try {
@@ -945,16 +1029,30 @@ export function App() {
       }
       return
     }
-    if (name === "clear") return setSession(activeID(), (session) => ({ ...session, messages: [], summary: undefined, contextTokens: 0, tokens: 0, cost: 0, updated: Date.now() }))
+    if (name === "clear") return setSession(activeID(), (session) => ({ ...session, messages: [], summary: undefined, compaction: undefined, archivedMessages: undefined, legacyUsage: undefined, updated: Date.now() }))
     if (name === "context") {
-      const window = active().contextWindow || modelContextWindow(provider(), model())
-      const estimate = contextEstimate(history(active()), active().summary || "")
+      const latest = lastRequestUsage(active())
+      const window = latest?.contextWindow || active().legacyUsage?.contextWindow || modelContextWindow(provider(), model())
+      const estimate = countTextTokens([sessionSummary(active()), ...history(active()).map((message) => message.text)].filter(Boolean).join("\n"), resolveModel(provider(), model(), window))
       return openDetail("Context", [
         `Model window: ${formatTokens(window)}`,
-        `Last request: ${formatTokens(active().contextTokens || 0)}`,
-        `Session estimate: ${formatTokens(estimate)}`,
+        `Last input context: ${formatTokens(latest?.inputContextTokens ?? latest?.inputTokens ?? active().legacyUsage?.lastRequestTokens ?? 0)}`,
+        `Session history: ${formatTokens(estimate.tokens)} (${estimate.quality})`,
         "",
-        "NIMBL selects relevant project files locally and reserves room for the model response.",
+        ...(latest?.budget ? [
+          `System: ${formatTokens(latest.budget.systemInstructions)}`,
+          `Tools: ${formatTokens(latest.budget.toolSchemas)}`,
+          `History: ${formatTokens(latest.budget.history)}`,
+          `Summary: ${formatTokens(latest.budget.summary)}`,
+          `Attachments: ${formatTokens(latest.budget.attachments)}`,
+          `Project instructions: ${formatTokens(latest.budget.projectInstructions)}`,
+          `Retrieval: ${formatTokens(latest.budget.retrieval)}`,
+          `Output reserve: ${formatTokens(latest.budget.outputReservation)}`,
+          `Safety margin: ${formatTokens(latest.budget.safetyMargin)}`,
+          `Tokenizer: ${latest.budget.tokenizer} (${latest.budget.quality})`,
+          `Retrieval: ${latest.retrieval?.selectedFiles ?? 0}/${latest.retrieval?.matchedFiles ?? 0} files selected (${latest.retrieval?.cacheHit ? "cache hit" : "index query"})`,
+          `Index: generation ${latest.retrieval?.indexGeneration ?? 0}, ${latest.retrieval?.indexedFiles ?? 0} files indexed, ${latest.retrieval?.ignoredFiles ?? 0} ignored`,
+        ] : ["No persisted request budget is available for this session yet."]),
       ])
     }
     if (name === "details" || name === "status") return openDetail("Session details", [
@@ -965,12 +1063,14 @@ export function App() {
       `Session ID: ${active().id}`,
       `Continue: nimbl -s ${active().id}`,
       `Prompts: ${active().messages.filter((message) => message.role === "user").length}`,
-      `Tokens: ${formatTokens(active().tokens || 0)}`,
-      `Reference cost: $${(active().cost || 0).toFixed(4)}`,
+      `Tokens: ${formatTokens(sessionUsage(active()).totalTokens)}`,
+      `Reference cost: $${sessionUsage(active()).referenceCostUsd.toFixed(4)}`,
+      ...(sessionUsage(active()).providerCostUsd ? [`Estimated provider cost: $${sessionUsage(active()).providerCostUsd.toFixed(4)}`] : []),
     ])
     if (name === "stats") return openDetail("Usage", [
-      `Tokens: ${formatTokens(active().tokens || 0)}`,
-      `Reference cost: $${(active().cost || 0).toFixed(4)}`,
+      `Tokens: ${formatTokens(sessionUsage(active()).totalTokens)}`,
+      `Reference cost: $${sessionUsage(active()).referenceCostUsd.toFixed(4)}`,
+      ...(sessionUsage(active()).providerCostUsd ? [`Estimated provider cost: $${sessionUsage(active()).providerCostUsd.toFixed(4)}`] : []),
     ])
     if (name === "help") return openDetail("Keyboard shortcuts", [
       "Tab        cycle Build / Plan / Explain / Learn",
@@ -1122,6 +1222,7 @@ export function App() {
   })
 
   onCleanup(() => {
+    contextIndex.close()
     if (persistTimer) clearTimeout(persistTimer)
     if (toastTimer) clearTimeout(toastTimer)
     if (focusTimer) clearTimeout(focusTimer)
@@ -1161,7 +1262,7 @@ export function App() {
             focusMessageID={selectedMessageID()}
             sidebarVisible={sidebarVisible()}
             contextText={contextText()}
-            cost={active().cost || 0}
+            cost={sessionUsage(active()).referenceCostUsd}
             contentWidth={contentWidth()}
             keyboardDisabled={dialog() !== null}
             pendingApproval={currentApproval() ? {
@@ -1185,7 +1286,7 @@ export function App() {
               <box flexGrow={1} minHeight={0} />
               <box height={4} minHeight={0} flexShrink={1} />
               <box flexShrink={0} flexDirection="column">
-                <For each={LOGO}>{(line) => <text fg={theme.primaryForeground}>{line}</text>}</For>
+                <For each={LOGO}>{(line) => <text fg={theme.brand}>{line}</text>}</For>
               </box>
               <box height={1} minHeight={0} flexShrink={1} />
               <box><text fg={theme.text}>Token-efficient AI coding companion</text></box>
@@ -1214,7 +1315,7 @@ export function App() {
               <box flexGrow={1} minWidth={0} overflow="hidden">
                 <text fg={theme.textMuted} wrapMode="none">{directory}</text>
               </box>
-              <text flexShrink={0} fg={theme.textMuted}>NIMBL</text>
+              <text flexShrink={0} fg={theme.brand}>NIMBL</text>
             </box>
           </box>
         </Show>
@@ -1304,7 +1405,7 @@ export function App() {
           <Show when={dialog() === "connect" && pendingProvider()}>
             <TextPromptDialog
               title={`Connect ${providerName(pendingProvider()!.provider)}`}
-              description={<text fg={theme.textMuted}>Enter an API key for this NIMBL process.</text>}
+               description={<text fg={theme.textMuted}>Saved globally on this computer. Environment variables still take priority.</text>}
               placeholder="API key"
               secret
               onConfirm={connectProvider}

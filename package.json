@@ -18,11 +18,14 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.21",
     "@ai-sdk/openai": "^4.0.20",
+    "@babel/parser": "^8.0.4",
     "@opentui/core": "0.4.5",
     "@opentui/keymap": "0.4.5",
     "@opentui/solid": "0.4.5",
     "ai": "^7.0.37",
-    "solid-js": "1.9.10"
+    "js-tiktoken": "^1.0.21",
+    "solid-js": "1.9.10",
+    "web-tree-sitter": "0.25.10"
   },
   "devDependencies": {
     "typescript": "^7.0.2",

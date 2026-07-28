@@ -791,17 +791,14 @@ Rendered in forest green (`#06402b`) on black (`#0a0a0a`).
 | Issue | Impact | Status |
 |-------|--------|--------|
 | `@opentui/solid` patches lost on `bun install` | Requires manual re-patch after install | Workaround (baked into bundle) |
-| Auto-scroll to bottom not working | New messages appear below viewport | In progress |
-| No streaming output | Full response rendered at once (increased latency perception) | Pending |
-| No markdown rendering | Raw text output (no syntax highlighting, links, etc.) | Pending |
-| Error recovery limited | No retry mechanism for transient failures | Pending |
+| Non-OpenAI tokenizer families are estimated | Preflight counts include a conservative safety margin | Explicit fallback |
+| Semantic/graph/AST retrieval is absent | Context relevance remains lexical | Planned |
+| Provider prompt caching is absent | Repeated provider input is not cache-optimized deliberately | Planned |
 | Compiled `.js`/`.d.ts` files in `src/` | Stale build artifacts from earlier `tsc` runs; can cause stale test runs | Cleanup needed |
 
 ### 16.2 Technical Debt
 
-- Session storage still needs locking, schema migrations, and recovery tooling
 - Patched `node_modules` makes `bun install` a two-step process (install → build)
-- No automated tests for TUI components (OpenTUI test utilities pending)
 - Stale compiled `.js` files in source tree can cause confusing test failures
 
 ### 16.3 Future Work

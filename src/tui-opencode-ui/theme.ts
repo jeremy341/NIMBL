@@ -4,6 +4,7 @@ const NIMBL_FOREGROUND = "#4ade80"
 
 // OpenCode's dark semantic theme with NIMBL green as the primary accent.
 export const theme = {
+  brand: "#16885a",
   primary: "#06402b",
   primaryForeground: NIMBL_FOREGROUND,
   secondary: "#5c9cf5",

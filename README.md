@@ -118,9 +118,9 @@ bun run typecheck
 
 ## Token Accounting
 
-NIMBL reports provider token usage and a hypothetical GPT-4o reference cost. It does not currently calculate actual provider billing or validated savings against competing products.
+NIMBL persists provider-reported usage per assistant request, including cache and reasoning details when available. It shows GPT-4o reference cost separately from estimated provider cost; provider cost is available only for models with dated catalog pricing.
 
-Current context reduction uses lexical file selection, bounded excerpts, and a limited conversation history. Semantic retrieval, dependency graphs, AST compression, provider prompt caching, and reproducible comparative benchmarks remain planned work.
+Request budgeting uses exact OpenAI-family tokenizers and clearly labeled conservative estimates for other model families. It budgets system instructions, tools, history, summaries, attachments, project instructions, retrieval, output, protocol overhead, and safety margin, then automatically archives older turns into a structured summary near model limits. Context retrieval uses an ignore-aware lexical index and parser-backed structural chunks for TypeScript, JavaScript, and JSON, with lexical fallback for other files. Semantic retrieval, dependency graphs, universal AST compression, provider prompt caching, and reproducible comparative benchmarks remain planned work.
 
 ## Roadmap
 
@@ -145,6 +145,20 @@ NIMBL_MODEL=               # Model override
 NIMBL currently uses a static provider catalog covering hosted services such as OpenRouter, OpenAI, Anthropic, Google AI Studio, Groq, Mistral, GitHub Models, and others. Hosted services require their corresponding credentials.
 
 Ollama, LM Studio, and FreeLLM API are supported as local connectors, but their servers and models must be installed and running separately. Use `/provider` in the TUI to inspect the current catalog.
+
+### Saved Provider Keys
+
+Entering a key through the provider dialog saves it for future NIMBL runs, including when NIMBL is launched from another directory. Keys are stored as plaintext in `%APPDATA%\nimbl\config.json` on Windows and `~/.config/nimbl/config.json` on other platforms. Command-line keys take priority over environment variables, and environment variables take priority over saved keys.
+
+## Security Boundary
+
+NIMBL file tools are confined to canonical project paths and block environment files, repository internals, NIMBL state, common credential files, and private-key formats. Project skills are the narrow exception: the skill tool may read only the canonical `.nimbl/skills/<name>/SKILL.md` file it resolves.
+
+Approved shell commands are not sandboxed. They run with the current user's permissions and can access files, processes, and networks outside the project. Review shell approvals as carefully as commands entered directly in a terminal.
+
+Session data is project-local and stored in plaintext under `.nimbl/`. It can include prompts, reasoning, tool output, attachment expansions, request usage, and approved file snapshots. Use `/delete`, `/clear`, and `/export` deliberately, and do not put secrets into prompts or approved command output.
+
+Saved provider keys are also plaintext. Protect the operating-system account that owns the global NIMBL config file and remove its `providerKeys` entries if a credential is revoked.
 
 ## Contributing
 

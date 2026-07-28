@@ -49,9 +49,9 @@ These items were completed before this roadmap was created. Do not reimplement t
 - [x] Clickable completed Thought parts expand and collapse Markdown reasoning.
 - [x] Streaming reasoning, tool parts, session persistence, multiline paste, slash commands, and the primary OpenTUI entry are operational.
 
-## Phase 0: Remaining Release Blockers
+## Phase 0: Release Hardening (Complete)
 
-Complete every item in this phase before calling the current prerelease durable.
+All identified phase-0 release blockers are implemented and verified. Reopen an item if a regression is found.
 
 ### P0-01 Preserve Corrupt Session Stores
 
@@ -114,12 +114,12 @@ Acceptance criteria:
 
 ### P0-04 Complete Security Boundary Tests
 
-- [ ] Test read and write attempts through symlinked files and directories.
-- [ ] Test traversal against write, edit, patch, snapshot, glob, grep, and skill.
-- [ ] Define protected project metadata beyond `.env`, including `.git`, NIMBL stores, credential files, and private keys.
-- [ ] Add explicit policy overrides where access to protected metadata is legitimately required.
-- [ ] Document that shell approval is not a filesystem sandbox.
-- [ ] Test abort timing, retry limits, retry-after-activity suppression, and malformed streams.
+- [x] Test read and write attempts through symlinked files and directories.
+- [x] Test traversal against write, edit, patch, snapshot, glob, grep, and skill.
+- [x] Protect project metadata beyond `.env`, including `.git`, NIMBL stores, common credential files, and private-key formats.
+- [x] Limit the project-skill exception to canonical `.nimbl/skills/<name>/SKILL.md` files.
+- [x] Document that shell approval is not a filesystem sandbox.
+- [x] Test abort timing, retry limits, retry-after-activity suppression, and malformed streams.
 
 Primary files:
 
@@ -134,19 +134,19 @@ Acceptance criteria:
 - Every local tool has allow, ask, deny, protected-path, and escape coverage.
 - Documentation does not imply that approved shell commands are confined to the project.
 
-## Phase 1: Durable Sessions And Accounting
+## Phase 1: Durable Sessions And Accounting (Complete)
 
 This phase is the foundation for compaction, background agents, benchmarks, and trustworthy token reporting.
 
 ### P1-01 Versioned Session Storage
 
-- [ ] Add runtime schema validation and explicit migrations.
-- [ ] Add file locking or revision-based compare-and-swap writes.
-- [ ] Prevent concurrent NIMBL processes from silently losing updates.
-- [ ] Add backup rotation and recovery from interrupted writes.
-- [ ] Add retention limits, archival, and pagination or indexed storage.
-- [ ] Define privacy behavior for reasoning, tool output, inline command output, and secrets.
-- [ ] Add export/delete controls for project session data.
+- [x] Add runtime schema validation and version-1 to version-2 migration.
+- [x] Add bounded lock ownership and revision-based compare-and-swap writes.
+- [x] Prevent concurrent NIMBL processes from silently losing updates.
+- [x] Add three-generation backup rotation, unique temporary files, stale-lock recovery, and corrupt-file fingerprints.
+- [x] Add active-session retention limits and bounded archival storage.
+- [x] Document plaintext retention for reasoning, tools, inline output, usage, snapshots, and secrets.
+- [x] Preserve existing session `/export`, `/clear`, and `/delete` controls under the migrated schema.
 
 Acceptance criteria:
 
@@ -156,13 +156,13 @@ Acceptance criteria:
 
 ### P1-02 Canonical Usage Records
 
-- [ ] Persist usage per assistant request, not only session totals.
-- [ ] Store input, output, total, cache-read, cache-write, reasoning, and text token fields when providers report them.
-- [ ] Store provider, model, request ID, attempts, finish reason, latency, and interrupted/failed state.
-- [ ] Derive total from input plus output when providers omit it.
-- [ ] Keep latest request usage separate from current input-context occupancy.
-- [ ] Track failed and interrupted attempt usage when available.
-- [ ] Migrate existing sessions without losing aggregate totals.
+- [x] Persist usage per assistant request instead of mutating aggregate counters.
+- [x] Store input, output, total, cache-read, cache-write, reasoning, and text token fields when providers report them.
+- [x] Store provider/model on the assistant message and request IDs, attempts, finish reason, latency, and successful completion state in usage.
+- [x] Derive total from input plus output when providers omit it.
+- [x] Keep input-context occupancy, latest request usage, and cumulative session usage separate.
+- [x] Retain retry count and available successful aggregate usage; providers do not expose billable usage for failed pre-response attempts consistently.
+- [x] Migrate existing aggregate totals into an explicit legacy baseline without inventing input/output splits.
 
 Primary files:
 
@@ -179,13 +179,13 @@ Acceptance criteria:
 
 ### P1-03 Provider And Model Metadata
 
-- [ ] Add model capabilities: tools, reasoning, images, streaming, structured output, tokenizer family, context window, and maximum output.
-- [ ] Add versioned provider/model pricing for input, output, cache reads/writes, and reasoning tokens.
-- [ ] Validate model compatibility before exposing tools or attachments.
-- [ ] Replace the silent unknown-model 128K assumption with an explicit unknown state or required override.
-- [ ] Separate actual estimated provider cost from GPT-4o reference cost.
-- [ ] Add provider health checks and model discovery where supported.
-- [ ] Add retry/fallback routing that respects availability and capabilities.
+- [x] Add tools, reasoning, image, streaming, structured-output, tokenizer, context-window, and maximum-output metadata.
+- [x] Add optional dated pricing records with input/output/cache/reasoning rate fields and source metadata.
+- [x] Validate model compatibility before exposing request tools.
+- [x] Require an explicit context-window override for unknown custom models.
+- [x] Separate estimated provider cost from GPT-4o reference cost.
+- [x] Add cached provider health checks with discovered model IDs.
+- [x] Validate automatic route health and retain the active provider as the fallback when a candidate is unavailable.
 
 Acceptance criteria:
 
@@ -194,10 +194,10 @@ Acceptance criteria:
 
 ### P1-04 Model-Aware Token Counting
 
-- [ ] Select or implement tokenizer adapters by model family.
-- [ ] Count system instructions, tool schemas, history, summaries, attachments, project context, and output reservation.
-- [ ] Preserve approximate estimates only as an explicit fallback.
-- [ ] Add fixtures covering source code, Unicode, JSON schemas, and long attachments.
+- [x] Add exact `o200k_base` and `cl100k_base` adapters plus conservative Anthropic, Gemini, Llama, Mistral, and unknown-family adapters.
+- [x] Count system instructions, JSON tool schemas, history, summaries, attachments, project context, and output reservation.
+- [x] Label every count as exact, family estimate, or character estimate.
+- [x] Add tokenizer and complete-budget fixtures; broader multilingual calibration remains benchmark work.
 
 Acceptance criteria:
 
@@ -206,11 +206,11 @@ Acceptance criteria:
 
 ### P1-05 Complete Request Budgeting
 
-- [ ] Define allocations for system instructions, tools, history, summary, attachments, retrieval, and output.
-- [ ] Enforce the configured output reservation in the provider request.
-- [ ] Reduce optional context in a deterministic order when over budget.
-- [ ] Reject impossible requests before sending them.
-- [ ] Show a budget breakdown in `/context`.
+- [x] Define allocations for system instructions, tools, history, summary, attachments, project instructions, retrieval, protocol overhead, safety, and output.
+- [x] Enforce the output reservation with `maxOutputTokens`.
+- [x] Drop low-priority retrieval and then oldest history deterministically when over budget.
+- [x] Reject impossible requests before sending and recheck projected messages before every tool-loop step.
+- [x] Persist and display the complete breakdown in `/context`.
 
 Acceptance criteria:
 
@@ -219,12 +219,12 @@ Acceptance criteria:
 
 ### P1-06 Automatic Structured Compaction
 
-- [ ] Trigger compaction before overflow rather than waiting for `/compact`.
-- [ ] Preserve decisions, constraints, modified files, unresolved tasks, errors, and learning state in structured fields.
-- [ ] Retain a token-budgeted recent tail.
-- [ ] Expire or summarize old tool output and attachments.
-- [ ] Preserve an archive or make destructive compaction explicit.
-- [ ] Add summary-quality and continuation tests.
+- [x] Trigger compaction when active history crosses the configured model occupancy threshold.
+- [x] Preserve decisions, constraints, modified files, unresolved tasks, errors, and learning state in structured fields.
+- [x] Retain a recent turn-safe tail for active model history.
+- [x] Exclude archived tool output and attachment expansions from active history while preserving their raw messages.
+- [x] Preserve deduplicated archived messages in session storage.
+- [x] Add repeated-compaction, structure, archive, threshold, and usage-preservation tests.
 
 Acceptance criteria:
 
@@ -237,26 +237,26 @@ Implement these in order so every new mechanism can be benchmarked against the p
 
 ### P2-01 Harden The Lexical Baseline
 
-- [ ] Respect `.gitignore`, NIMBL ignore rules, binary detection, file-size limits, and protected paths.
-- [ ] Expand supported language/file types through configuration.
-- [ ] Build an incremental index instead of rescanning the project for every uncached query.
-- [ ] Add filesystem watching and targeted cache invalidation.
-- [ ] Improve lexical ranking with term frequency, proximity, symbol names, and path relevance.
-- [ ] Record candidates, selected excerpts, exclusions, rationale, and estimated tokens.
-- [ ] Build retrieval-quality fixtures with known relevant files.
+- [x] Respect root/nested `.gitignore`, binary detection, file-size limits, hard exclusions, and protected canonical paths.
+- [x] Support an explicit index extension allowlist.
+- [x] Build a process-local incremental index instead of rescanning on every uncached query.
+- [x] Add opt-in filesystem watching and generation-based invalidation with lifecycle cleanup.
+- [x] Rank lexical results by term frequency, proximity, symbol names, and path relevance.
+- [x] Record candidates, selected excerpts, exclusion counts, rationale, generation, cache state, and estimated tokens.
+- [x] Add retrieval fixtures for ignores, safety exclusions, invalidation, watcher updates, structural preference, and extension configuration.
 
 ### P2-02 Parser-Backed Structural Chunks
 
-- [ ] Integrate Tree-sitter or an equivalent parser in maintained source.
-- [ ] Extract symbol boundaries for supported languages.
-- [ ] Produce syntactically coherent compressed representations.
-- [ ] Preserve signatures, imports, types, control-flow context, and referenced declarations.
-- [ ] Define fallback behavior for unsupported languages or parse failures.
-- [ ] Test structural validity and measured reduction.
+- [x] Integrate Babel's maintained parser for TypeScript, TSX, JavaScript, JSX, and JSON-compatible source.
+- [x] Extract top-level symbol boundaries for functions, classes, interfaces, type aliases, enums, variables, imports, and JSON properties.
+- [x] Produce syntactically coherent declaration chunks and preserve signatures and imports.
+- [x] Preserve full selected declarations; cross-file reference expansion remains P2-03 graph work.
+- [x] Fall back to lexical excerpts for Markdown, Python, Go, Rust, unsupported extensions, and parse failures.
+- [x] Test structural signatures, imports, JSON units, parse fallback, and measured declaration reduction.
 
 Acceptance criteria:
 
-- Documentation may say “AST compression” only after these tests pass.
+- Documentation may say “parser-backed structural chunks” for the supported parser set. Do not claim universal AST compression or a percentage reduction until benchmarked.
 
 ### P2-03 Dependency And Symbol Graph
 
@@ -441,7 +441,7 @@ Dependency rule: implement P5-07 only after P5-01 through P5-06 produce trustwor
 ### P6-06 Transcript Navigation And Metadata
 
 - [ ] Add transcript timestamps and metadata visibility controls.
-- [ ] Persist per-message usage, latency, cache, retry, and finish metadata.
+- [x] Persist per-message usage, latency, cache, retry, and finish metadata.
 - [ ] Add PageUp/PageDown, half-page, top/bottom, and next/previous message commands.
 - [ ] Add an unread/new-output marker when detached from the bottom.
 - [ ] Add keyboard focus for Thought, tools, diffs, and sidebar sections.
@@ -552,10 +552,9 @@ Every roadmap item must satisfy all applicable requirements:
 
 Implement these next, in order:
 
-1. `P0-04` security-boundary integration coverage.
-2. `P1-01` versioned, recoverable session storage.
-3. `P1-02` canonical per-request usage records.
-4. `P1-04` model-aware token counting.
-5. `P1-05` complete request budgeting.
+1. `P2-01` harden and index the lexical retrieval baseline.
+2. `P2-02` parser-backed structural chunks.
+3. `P2-03` dependency and symbol graph.
+4. `P2-04` hybrid semantic retrieval.
 
 Do not start semantic retrieval, subagents, plugins, or skill-tree UI before these foundations are complete.

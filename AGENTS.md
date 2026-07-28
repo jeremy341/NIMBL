@@ -42,7 +42,7 @@ NIMBL/
 │   └── core/
 │       ├── agent.ts          # Streaming agent and tools
 │       ├── providers.ts      # Provider/model catalog
-│       ├── sessions.ts       # Durable session storage
+│       ├── sessions.ts       # Versioned CAS session storage, usage, backups
 │       └── context.ts        # Local context selection
 ├── tests/
 │   ├── config.test.ts        # Configuration tests
@@ -351,6 +351,13 @@ bun test --watch
 3. Throw early if keys are missing
 4. Log errors without leaking secrets
 
+### Runtime Boundary
+
+- File tools resolve canonical paths and block project escapes, `.env` files, `.git`, NIMBL state, common credential files, and private-key formats.
+- Project skills are an explicit narrow exception limited to canonical `.nimbl/skills/<name>/SKILL.md` files.
+- Approved shell commands are not sandboxed. They execute with the current user's operating-system permissions and may access paths and networks outside the project.
+- Session transcripts, reasoning, tool output, usage, and snapshots are stored as project-local plaintext in `.nimbl`; features that persist new sensitive fields must document retention and deletion behavior.
+
 ---
 
 ## Performance Considerations
@@ -361,9 +368,10 @@ NIMBL records provider-reported token usage. No task-level target or competitor 
 
 **Current controls:**
 1. Lexical project-file selection
-2. Bounded excerpts and tool output
-3. Limited conversation history
-4. No automatic project-wide file dump
+2. Ignore-aware incremental index and parser-backed TypeScript/JavaScript/JSON chunks
+3. Model-aware request budgeting and bounded tool output
+4. Automatic structured compaction with archived raw turns
+5. No automatic project-wide file dump
 
 ### Latency
 

@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { resolveConfig } from "@/config"
+import { loadGlobalConfig, saveGlobalConfig } from "@/core/global-config"
+import { mkdtempSync, rmSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 
 describe("resolveConfig", () => {
   const originalEnv = process.env
@@ -71,5 +75,24 @@ describe("resolveConfig", () => {
     expect(config.provider).toBe("freellmapi")
     expect(config.model).toBe("auto")
   })
-})
 
+  it("uses globally saved keys when launched outside the project", () => {
+    const directory = mkdtempSync(join(tmpdir(), "nimbl-config-"))
+    const file = join(directory, "config.json")
+    try {
+      saveGlobalConfig({ provider: "openrouter", model: "deepseek/deepseek-v4-pro", providerKeys: { openrouter: "global-key" } }, file)
+      delete process.env.OPENROUTER_KEY
+      const config = resolveConfig([], loadGlobalConfig(file))
+      expect(config.provider).toBe("openrouter")
+      expect(config.apiKey).toBe("global-key")
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it("prefers environment keys over globally saved keys", () => {
+    process.env.OPENROUTER_KEY = "environment-key"
+    const config = resolveConfig([], { provider: "openrouter", providerKeys: { openrouter: "global-key" } })
+    expect(config.apiKey).toBe("environment-key")
+  })
+})
