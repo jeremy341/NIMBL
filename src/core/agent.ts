@@ -24,6 +24,7 @@ export interface PermissionRequest {
   title: string
   detail: string
   diff?: string
+  target?: string
 }
 
 export interface ToolEvent {
@@ -144,12 +145,19 @@ function projectInstructions(root: string) {
     .join("\n\n")
 }
 
-async function shell(command: string, cwd: string) {
+async function shell(command: string, cwd: string, signal?: AbortSignal) {
   const child = Bun.spawn(process.platform === "win32"
     ? ["powershell.exe", "-NoProfile", "-Command", command]
     : ["/bin/sh", "-lc", command], { cwd, stdout: "pipe", stderr: "pipe" })
-  const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
-  return { code, output: clip((stdout + (stderr ? "\n" + stderr : "")).trim() || "(no output)", 12_000) }
+  const abort = () => child.kill()
+  signal?.addEventListener("abort", abort, { once: true })
+  try {
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    if (signal?.aborted) throw new Error("Command interrupted.")
+    return { code, output: clip((stdout + (stderr ? "\n" + stderr : "")).trim() || "(no output)", 12_000) }
+  } finally {
+    signal?.removeEventListener("abort", abort)
+  }
 }
 
 function safeURL(value: string) {
@@ -190,7 +198,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     const policy = permissionFor(options.permissions, { tool: toolName, target: target || detail })
     if (policy === "deny") throw new Error(`${toolName} is blocked by project policy.`)
     if (policy === "allow") return
-    const choice = await options.requestApproval({ id: toolID(), tool: toolName, title, detail, diff })
+    const choice = await options.requestApproval({ id: toolID(), tool: toolName, title, detail, diff, target })
     if (choice === "reject") throw new Error("The user rejected this action.")
   }
 
@@ -307,9 +315,18 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         const event = toolID()
         try {
           const paths = patchPaths(options.root, patch)
+          const before = new Map(paths.map((path) => {
+            const target = relativePath(options.root, path)
+            return [path, existsSync(target.full) ? readFileSync(target.full, "utf8") : ""] as const
+          }))
           emitTool({ id: event, tool: "apply_patch", state: "running", title: "Apply patch to " + paths.join(", "), detail: paths.join(", "), diff: clip(patch, 12_000) })
           await approve("apply_patch", "Apply patch", "Update " + paths.join(", "), clip(patch, 12_000), paths.join(", "))
           await applyUnifiedPatch(options.root, patch)
+          for (const path of paths) {
+            const target = relativePath(options.root, path)
+            const after = existsSync(target.full) ? readFileSync(target.full, "utf8") : ""
+            options.onFileChange?.({ path, before: before.get(path) || "", after })
+          }
           emitTool({ id: event, tool: "apply_patch", state: "completed", title: "Applied patch", detail: paths.join(", "), diff: clip(patch, 12_000) })
           return "Applied patch to " + paths.join(", ")
         } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "apply_patch", state: "rejected", title: "Apply patch", detail: message }); return "Error: " + message }
@@ -322,7 +339,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         const event = toolID(); emitTool({ id: event, tool: "bash", state: "running", title: "Run command", detail: command })
         try {
           await approve("bash", "Run command", command, undefined, command)
-          const result = await shell(command, options.root)
+          const result = await shell(command, options.root, options.abortSignal)
           const state = result.code === 0 ? "completed" : "failed"
           emitTool({ id: event, tool: "bash", state, title: "Command exited " + result.code, detail: command, output: result.output })
           return "Exit code " + result.code + "\n" + result.output

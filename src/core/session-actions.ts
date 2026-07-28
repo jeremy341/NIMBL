@@ -1,5 +1,5 @@
-import { existsSync, writeFileSync } from "node:fs"
-import { dirname, resolve } from "node:path"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname, isAbsolute, relative, resolve } from "node:path"
 import type { StoredSession } from "./sessions"
 
 export interface FileSnapshot {
@@ -27,7 +27,11 @@ export function forkSession<T extends StoredSession>(session: T, id: string): T 
     parentID: session.id,
     created: Date.now(),
     updated: Date.now(),
-    messages: session.messages.map((message) => ({ ...message, id: `${id}-${message.id}` })),
+    messages: session.messages.map((message) => ({
+      ...message,
+      id: `${id}-${message.id}`,
+      parts: message.parts?.map((part) => ({ ...part, id: `${id}-${part.id}` })),
+    })),
   }
 }
 
@@ -38,8 +42,8 @@ export function recordSnapshot<T extends SessionWithSnapshots>(session: T, snaps
 
 function safeProjectPath(root: string, path: string) {
   const target = resolve(root, path)
-  const relative = target.slice(resolve(root).length)
-  if (relative.startsWith("..") || !target.startsWith(resolve(root))) throw new Error("Snapshot path is outside the project.")
+  const rel = relative(resolve(root), target)
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new Error("Snapshot path is outside the project.")
   return target
 }
 
@@ -48,6 +52,8 @@ export function undoSnapshot<T extends SessionWithSnapshots>(root: string, sessi
   if (!snapshot) return { session }
   const file = safeProjectPath(root, snapshot.path)
   if (!existsSync(dirname(file))) throw new Error("Snapshot target directory no longer exists.")
+  const current = existsSync(file) ? readFileSync(file, "utf8") : ""
+  if (current !== snapshot.after) throw new Error("The file changed after this snapshot; undo was not applied.")
   writeFileSync(file, snapshot.before, "utf8")
   return {
     snapshot,
@@ -60,6 +66,8 @@ export function redoSnapshot<T extends SessionWithSnapshots>(root: string, sessi
   if (!snapshot) return { session }
   const file = safeProjectPath(root, snapshot.path)
   if (!existsSync(dirname(file))) throw new Error("Snapshot target directory no longer exists.")
+  const current = existsSync(file) ? readFileSync(file, "utf8") : ""
+  if (current !== snapshot.before) throw new Error("The file changed after undo; redo was not applied.")
   writeFileSync(file, snapshot.after, "utf8")
   return {
     snapshot,
