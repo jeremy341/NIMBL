@@ -15,6 +15,7 @@ import { resolveProjectPath, resolveUnprotectedProjectPath } from "./project-pat
 import { runShellCommand } from "./shell"
 import { fitRequestToBudget, type RequestBudgetBreakdown } from "./request-budget"
 import { countTextTokens } from "./tokenizers"
+import { buildCachedPrompt } from "./prompt-cache"
 
 export type AgentMode = "build" | "plan" | "explain" | "learn"
 export type ApprovalChoice = "once" | "always" | "reject"
@@ -87,6 +88,7 @@ export interface AgentRunResult {
   }
   attempts: number
   latencyMs: number
+  cacheKey?: string
   finishReason?: string
   rawFinishReason?: string
   callId?: string
@@ -494,7 +496,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   if (!fitted.budget.fits) throw new Error(`Request requires ${fitted.budget.requestTotal} tokens but ${modelDefinition.name} supports ${modelDefinition.contextWindow}. Reduce attachments or choose a larger model.`)
   const history = rawHistory.slice(rawHistory.length - fitted.history.length).map((message) => ({ role: message.role, content: message.text }))
   const retrievalText = fitted.retrieval.length ? `Relevant project context (${fitted.budget.retrieval} ${fitted.budget.quality === "exact" ? "tokens" : "estimated tokens"}; selected locally):\n${[...fitted.retrieval].reverse().join("\n\n")}` : ""
-  const system = [...systemInstructions, projectInstructionText, options.summary ? "Session summary:\n" + options.summary : "", retrievalText].filter(Boolean).join("\n\n")
+  const cachedPrompt = buildCachedPrompt({
+    provider: getProvider(options.provider),
+    stable: [...systemInstructions, projectInstructionText, options.summary ? "Session summary:\n" + options.summary : ""],
+    dynamic: [retrievalText],
+  })
 
   let text = ""
   let reasoning = ""
@@ -504,10 +510,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     try {
       const result = streamText({
         model: createModel(options),
-        system,
+        system: cachedPrompt.system,
         messages: history as any,
         tools: availableTools,
         maxOutputTokens: fitted.budget.outputReservation,
+        providerOptions: cachedPrompt.providerOptions,
         prepareStep: ({ messages, instructions }) => {
           const dynamicTokens = countTextTokens(JSON.stringify({ instructions, messages }), modelDefinition).tokens
           const projected = dynamicTokens + fitted.budget.toolSchemas + fitted.budget.outputReservation + fitted.budget.safetyMargin
@@ -549,6 +556,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         },
         attempts: attempt,
         latencyMs: Date.now() - startedAt,
+        cacheKey: cachedPrompt.cacheKey,
         finishReason: finalStep?.finishReason,
         rawFinishReason: finalStep?.rawFinishReason,
         callId: finalStep?.callId,

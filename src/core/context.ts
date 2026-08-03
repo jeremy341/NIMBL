@@ -1,8 +1,12 @@
 import ignore, { type Ignore } from "ignore"
 import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs"
-import { dirname, relative } from "node:path"
+import { dirname, join, relative } from "node:path"
 import { resolveUnprotectedProjectPath } from "./project-path"
 import { structuralChunks, type StructuralChunk } from "./structural-context"
+import { buildDependencyGraph, type DependencyGraph } from "./dependency-graph"
+import { createEmbedder, type EmbeddingAdapter } from "./embeddings"
+import { buildVectorIndex, isCurrentVectorIndex, loadVectorIndex, saveVectorIndex, searchVectorIndex, unitsFromSources, type StoredVectorIndex } from "./vector-index"
+import { hybridRerank } from "./hybrid-retrieval"
 
 export interface ContextCandidate {
   path: string
@@ -22,6 +26,13 @@ export interface ContextRetrievalTelemetry {
   matchedFiles: number
   selectedFiles: number
   candidates: Array<{ path: string; score: number; reason: string; selected: boolean }>
+  graphIndexedFiles?: number
+  graphSymbols?: number
+  graphEdges?: number
+  graphExpandedFiles?: number
+  graphMaxHop?: number
+  hybrid?: boolean
+  semanticCandidates?: number
   elapsedMs: number
 }
 
@@ -83,9 +94,13 @@ class IndexedProjectContext implements ProjectContextIndex {
   private ready: Promise<void> | undefined
   private generation = 0
   private dirty = true
+  private graph: DependencyGraph | undefined
+  private embedder: EmbeddingAdapter | undefined
+  private vectorIndex: StoredVectorIndex | undefined
+  private queryEmbeddings = new Map<string, number[]>()
   private lastBuildTelemetry = emptyTelemetry(0, Date.now())
 
-  constructor(private readonly root: string, private readonly extensions: ReadonlySet<string>, watchProject = false) {
+  constructor(private readonly root: string, private readonly extensions: ReadonlySet<string>, watchProject = false, private readonly hybrid = false, private readonly graphEnabled = true) {
     if (watchProject) {
       this.watcher = watch(root, { recursive: true }, (_event, filename) => this.invalidate(filename?.toString()))
       this.watcher.unref()
@@ -151,6 +166,25 @@ class IndexedProjectContext implements ProjectContextIndex {
       } catch { telemetry.blockedFiles++ }
     }
     this.files = files
+    this.graph = this.graphEnabled ? buildDependencyGraph([...files.values()].map((file) => ({ path: file.path, source: file.content }))) : undefined
+    if (this.hybrid) {
+      const sources = [...files.values()].map((file) => ({ path: file.path, source: file.content }))
+      const units = unitsFromSources(sources)
+      this.embedder = this.embedder ?? createEmbedder()
+      const vectorFile = join(this.root, ".nimbl", "vector-index.json")
+      const persisted = loadVectorIndex(vectorFile)
+      if (this.embedder && (!persisted || !isCurrentVectorIndex(persisted, units))) {
+        try {
+          this.vectorIndex = await buildVectorIndex(units, this.embedder)
+          saveVectorIndex(vectorFile, this.vectorIndex)
+        } catch {
+          this.vectorIndex = undefined
+        }
+      } else if (persisted) {
+        this.vectorIndex = persisted
+      }
+      this.queryEmbeddings.clear()
+    }
     this.dirty = false
     this.lastBuildTelemetry = { ...telemetry, elapsedMs: Date.now() - started }
   }
@@ -187,9 +221,42 @@ class IndexedProjectContext implements ProjectContextIndex {
         : compressCode(file.content.split("\n").slice(Math.max(0, hit - 6), hit + 24).join("\n"), 36)
       matches.push({ path: file.path, score, excerpt, reason: `${chunks.length ? "structural lexical" : "lexical"} matches ${hitTerms.join(", ")}; frequency ${occurrences}, symbols ${symbolMatches}, path ${pathMatches}` })
     }
+    const seedPaths = matches.map((candidate) => candidate.path)
+    const graphEntries = this.graph?.expandFrom(seedPaths, budgetChars, limit) ?? []
+    const graphByPath = new Map(graphEntries.map((entry) => [entry.path, entry]))
+    const graphExpandedFiles = graphByPath.size
+    const graphMaxHop = graphEntries.reduce((maximum, entry) => Math.max(maximum, entry.hop), 0)
+    let candidatePool: Array<{ path: string; score: number; excerpt: string; reason: string }> = matches
+    let semanticCandidates = 0
+    if (this.hybrid && this.vectorIndex && this.embedder) {
+      let queryVector = this.queryEmbeddings.get(prompt)
+      if (!queryVector) {
+        const [vector] = await this.embedder.embed([prompt])
+        if (vector) {
+          queryVector = vector
+          this.queryEmbeddings.set(prompt, vector)
+        }
+      }
+      const semantic: Array<{ path: string; score: number }> = queryVector
+        ? searchVectorIndex(this.vectorIndex, queryVector, Math.max(limit, 12) * 4, 0.02).map(({ unit, score }) => ({ path: unit.file, score }))
+        : []
+      semanticCandidates = semantic.length
+      const hybridResults = hybridRerank({
+        lexical: matches.map((candidate) => ({ path: candidate.path, score: candidate.score, reason: candidate.reason, excerpt: candidate.excerpt })),
+        semantic,
+        graph: graphEntries.map((entry) => ({ path: entry.path, hop: entry.hop, reason: entry.reason, excerpt: entry.excerpt })),
+        vectorIndex: this.vectorIndex,
+      }, { topK: limit, diversity: 0.25 })
+      candidatePool = hybridResults.map((candidate) => ({ path: candidate.path, score: candidate.score, excerpt: candidate.excerpt, reason: candidate.reasons.join("; ") }))
+    } else {
+      for (const entry of graphEntries) {
+        if (matches.some((candidate) => candidate.path === entry.path)) continue
+        candidatePool.push({ path: entry.path, score: Math.max(1, 50 - entry.hop * 15), excerpt: entry.excerpt, reason: entry.reason })
+      }
+    }
     const items: ContextCandidate[] = []
     let used = 0
-    for (const candidate of matches.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path))) {
+    for (const candidate of candidatePool.slice().sort((left, right) => right.score - left.score || left.path.localeCompare(right.path))) {
       if (items.length >= limit || used >= budgetChars) break
       const excerpt = candidate.excerpt.slice(0, Math.max(0, budgetChars - used))
       if (!excerpt) break
@@ -201,7 +268,14 @@ class IndexedProjectContext implements ProjectContextIndex {
       cacheHit: false,
       matchedFiles,
       selectedFiles: items.length,
-      candidates: matches.map((candidate) => ({ path: candidate.path, score: candidate.score, reason: candidate.reason, selected: items.some((item) => item.path === candidate.path) })),
+      candidates: candidatePool.map((candidate) => ({ path: candidate.path, score: candidate.score, reason: candidate.reason, selected: items.some((item) => item.path === candidate.path) })),
+      graphIndexedFiles: this.graph?.fileCount() ?? 0,
+      graphSymbols: this.graph?.symbolCount() ?? 0,
+      graphEdges: this.graph?.edgeCount() ?? 0,
+      graphExpandedFiles,
+      graphMaxHop,
+      hybrid: this.hybrid,
+      semanticCandidates,
       elapsedMs: Date.now() - started,
     }
     const selection = { items, estimatedTokens: Math.ceil(used / 4), cacheHit: false, telemetry }
@@ -211,8 +285,8 @@ class IndexedProjectContext implements ProjectContextIndex {
   }
 }
 
-export function createProjectContextIndex(root: string, options: { watch?: boolean; extensions?: readonly string[] } = {}): ProjectContextIndex {
-  return new IndexedProjectContext(root, new Set(options.extensions || SUPPORTED), options.watch)
+export function createProjectContextIndex(root: string, options: { watch?: boolean; extensions?: readonly string[]; hybrid?: boolean; graph?: boolean } = {}): ProjectContextIndex {
+  return new IndexedProjectContext(root, new Set(options.extensions || SUPPORTED), options.watch, options.hybrid, options.graph)
 }
 
 export async function selectProjectContextWithBudget(root: string, prompt: string, limit = 12, budgetChars = Number.MAX_SAFE_INTEGER, options: { index?: ProjectContextIndex } = {}): Promise<ContextSelection> {

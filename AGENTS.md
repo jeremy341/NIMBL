@@ -40,13 +40,23 @@ NIMBL/
 │   ├── tui-opencode-ui/      # TUI components
 │   ├── config.ts             # Config resolution (.env, CLI args, defaults)
 │   └── core/
-│       ├── agent.ts          # Streaming agent and tools
-│       ├── providers.ts      # Provider/model catalog
-│       ├── sessions.ts       # Versioned CAS session storage, usage, backups
-│       └── context.ts        # Local context selection
+│       ├── agent.ts            # Streaming agent and tools
+│       ├── providers.ts        # Provider/model catalog
+│       ├── sessions.ts         # Versioned CAS session storage, usage, backups
+│       ├── context.ts          # Local context selection (lexical + graph + hybrid)
+│       ├── dependency-graph.ts # File/symbol identities, edges, budgeted expansion
+│       ├── structural-context.ts # Parser-backed declaration chunks
+│       ├── embeddings.ts       # Local/hosted embedding adapters
+│       ├── vector-index.ts     # Versioned vector index with content hashes
+│       ├── hybrid-retrieval.ts # Lexical+semantic+graph fusion, MMR diversity
+│       ├── prompt-cache.ts     # Stable cached prefixes, provider cache-control
+│       └── benchmark.ts        # P3-01 harness: grading, variance, JSONL
+├── benchmarks/
+│   ├── run.ts                  # Reproduction command (bun benchmarks/run.ts)
+│   └── corpus/                 # Frozen fixture project + tasks.json ground truth
 ├── tests/
-│   ├── config.test.ts        # Configuration tests
-│   └── api.test.ts           # API and cost calculation tests
+│   ├── config.test.ts          # Configuration tests
+│   └── api.test.ts             # API and cost calculation tests
 ├── docs/
 │   ├── RESEARCH_REPORT.md    # Comprehensive design document
 │   └── LOGO_DESIGN.md        # Branding guidelines
@@ -87,6 +97,10 @@ bun test
 
 # Build for distribution (future)
 bun run build
+
+# Reproduce the P3-01 retrieval benchmark (writes JSONL under .nimbl/benchmarks/)
+bun benchmarks/run.ts
+NIMBL_BENCH_SAMPLES=5 bun benchmarks/run.ts  # sample variance
 ```
 
 ### Development Environment
@@ -172,15 +186,71 @@ bun run build
 - Keys come from env vars at runtime
 - Update model names if providers change defaults
 
-### `src/core/types.ts` — Type Definitions
+### `src/core/context.ts` — Context Selection
 
 **Responsibilities:**
-- Define `Message`, `ChatRequest`, `ChatResponse` types
-- Define `EstimatedSavings` type (future use)
+- Rank lexical candidates by term frequency, proximity, symbol names, and path relevance
+- Expand seeds through the dependency graph under a token/char budget
+- Optional hybrid fusion (`hybrid: true`) with offline or hosted embeddings
+- Emit full retrieval telemetry (matches, candidates, graph, semantic, cache state)
 
 **Design:**
-- Minimal — only types actually used
-- Extensible for v0.2+ features (context budget, skill tree)
+- `createProjectContextIndex(root, { hybrid, graph })`; `graph: false` disables graph expansion (for benchmark ablations)
+- Persists a versioned vector index at `.nimbl/vector-index.json` in hybrid mode
+- Query cache is separate from provider prompt caching (see `prompt-cache.ts`)
+
+### `src/core/dependency-graph.ts` — Dependency And Symbol Graph
+
+**Responsibilities:**
+- Stable identities: `file:path` and `path#name` symbol IDs
+- Edges for imports, exports, references, calls, inheritance, and tests
+- Incremental edge recompute on file invalidation
+- Budgeted expansion (`expandFrom`) with hop tracking and `graph: …` reasons
+
+**Design:**
+- Edges are bidirectional for expansion; ambiguous symbol names are not linked
+- Test files detected by `*.test.*`/`*.spec.*` names or test-framework imports
+
+### `src/core/structural-context.ts` — Structural Chunks
+
+**Responsibilities:**
+- Parser-backed declaration chunks for TS/TSX/JS/JSX and JSON
+- Preserve signatures and imports; fall back to lexical excerpts otherwise
+
+### `src/core/embeddings.ts` / `src/core/vector-index.ts` / `src/core/hybrid-retrieval.ts` — Semantic Retrieval
+
+**Responsibilities:**
+- Local deterministic embedder and hosted OpenAI-compatible `/embeddings` adapter
+- Versioned vector index keyed by content hashes with persist/reload
+- Hybrid fusion of lexical (0.5) + semantic (0.35) + graph (0.15) scores with MMR diversity and duplicate suppression
+
+**Design:**
+- Offline mode requires no hosted embeddings; set `NIMBL_EMBEDDINGS_URL/KEY/MODEL` for hosted
+- Never claim semantic quality without benchmark data
+
+### `src/core/prompt-cache.ts` — Provider Prompt Caching
+
+**Responsibilities:**
+- Order stable system prefix before dynamic retrieval text
+- Anthropic: per-part `cacheControl: { type: "ephemeral" }` on stable system parts
+- OpenAI-compatible chat: stable `promptCacheKey` + explicit mode; no hint for OpenAI Responses or local providers
+
+**Design:**
+- Provider-reported `cacheReadTokens`/`cacheWriteTokens` flow into `AgentRunResult.usage` and session records
+- Local retrieval cache is a different mechanism from provider prompt caching
+
+### `src/core/benchmark.ts` + `benchmarks/` — Reproducible Benchmarks
+
+**Responsibilities:**
+- Frozen corpus (`benchmarks/corpus/`) with fixture project and `tasks.json` ground truth
+- Grading: precision@k, recall@k, MRR; variance across samples
+- JSONL raw results under `.nimbl/benchmarks/` with git revision and metadata
+
+**Running:**
+```bash
+bun benchmarks/run.ts
+NIMBL_BENCH_SAMPLES=5 bun benchmarks/run.ts
+```
 
 ### Tests
 
@@ -313,6 +383,12 @@ nimbl  # Uses freellmapi by default
 
 - `config.test.ts` — Config resolution logic
 - `api.test.ts` — Cost calculation accuracy
+- `context.test.ts` — Lexical/graph/hybrid context selection and budgets
+- `dependency-graph.test.ts` — Identities, edges, expansion budgets
+- `structural-context.test.ts` — Parser-backed declaration chunks
+- `retrieval-hybrid.test.ts` — Embedders, vector index, hybrid fusion
+- `prompt-cache.test.ts` — Stable prefixes and cache-control metadata
+- `benchmark.test.ts` — Grading, variance, JSONL, frozen corpus runs
 
 ### Integration Tests (Future)
 
@@ -364,7 +440,7 @@ bun test --watch
 
 ### Token Usage
 
-NIMBL records provider-reported token usage. No task-level target or competitor reduction factor is considered validated until a reproducible benchmark corpus and raw results are committed.
+NIMBL records provider-reported token usage. No task-level target or competitor reduction factor is considered validated until a reproducible benchmark corpus and raw results are committed. The frozen P3-01 corpus lives at `benchmarks/corpus/`; raw results are reproducible with `bun benchmarks/run.ts` (JSONL under `.nimbl/benchmarks/`). Retrieval claims require committed raw results and the git revision that produced them.
 
 **Current controls:**
 1. Lexical project-file selection
@@ -372,6 +448,7 @@ NIMBL records provider-reported token usage. No task-level target or competitor 
 3. Model-aware request budgeting and bounded tool output
 4. Automatic structured compaction with archived raw turns
 5. No automatic project-wide file dump
+6. Graph and hybrid semantic expansion under a strict budget (benchmarked, not claimed)
 
 ### Latency
 

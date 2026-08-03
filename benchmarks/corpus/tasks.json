@@ -1,0 +1,42 @@
+{
+  "name": "nimbl-benchmark-corpus",
+  "description": "Frozen retrieval corpus for NIMBL P3-01. Do not edit fixture files or task ground truth after a commit is tagged for a claim.",
+  "tasks": [
+    {
+      "id": "theme-config",
+      "query": "theme configuration",
+      "relevant": ["src/config.ts", "src/features/feature.ts"],
+      "limit": 4
+    },
+    {
+      "id": "retry-count",
+      "query": "how many retries",
+      "relevant": ["src/config.ts"],
+      "limit": 4
+    },
+    {
+      "id": "add-helper",
+      "query": "add numbers helper",
+      "relevant": ["src/utils.ts"],
+      "limit": 4
+    },
+    {
+      "id": "feature-tests",
+      "query": "tests cover the feature",
+      "relevant": ["tests/feature-check.ts", "src/features/feature.ts"],
+      "limit": 4
+    },
+    {
+      "id": "report-importers",
+      "query": "generate the report",
+      "relevant": ["src/features/report.ts", "src/features/feature.ts"],
+      "limit": 4
+    },
+    {
+      "id": "main-uses-feature",
+      "query": "main uses the feature",
+      "relevant": ["src/main.ts", "src/features/feature.ts"],
+      "limit": 4
+    }
+  ]
+}

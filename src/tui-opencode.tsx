@@ -1052,6 +1052,7 @@ export function App() {
           `Tokenizer: ${latest.budget.tokenizer} (${latest.budget.quality})`,
           `Retrieval: ${latest.retrieval?.selectedFiles ?? 0}/${latest.retrieval?.matchedFiles ?? 0} files selected (${latest.retrieval?.cacheHit ? "cache hit" : "index query"})`,
           `Index: generation ${latest.retrieval?.indexGeneration ?? 0}, ${latest.retrieval?.indexedFiles ?? 0} files indexed, ${latest.retrieval?.ignoredFiles ?? 0} ignored`,
+          `Graph: ${latest.retrieval?.graphExpandedFiles ?? 0} expanded files at hop ${latest.retrieval?.graphMaxHop ?? 0} over ${latest.retrieval?.graphEdges ?? 0} edges${latest.retrieval?.hybrid ? `, hybrid fused with ${latest.retrieval?.semanticCandidates ?? 0} semantic candidates` : ""}`,
         ] : ["No persisted request budget is available for this session yet."]),
       ])
     }

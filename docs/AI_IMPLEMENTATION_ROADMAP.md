@@ -260,41 +260,41 @@ Acceptance criteria:
 
 ### P2-03 Dependency And Symbol Graph
 
-- [ ] Build stable file and symbol identities.
-- [ ] Track imports, exports, references, inheritance, tests, and call relationships where supported.
-- [ ] Incrementally update graph edges on file changes.
-- [ ] Expand retrieval from seed results under a strict token budget.
-- [ ] Explain graph-derived selections in the UI and benchmark logs.
+- [x] Build stable file and symbol identities.
+- [x] Track imports, exports, references, inheritance, tests, and call relationships where supported.
+- [x] Incrementally update graph edges on file changes.
+- [x] Expand retrieval from seed results under a strict token budget.
+- [x] Explain graph-derived selections in the UI and benchmark logs.
 
 ### P2-04 Hybrid Semantic Retrieval
 
-- [ ] Define local and hosted embedding adapters.
-- [ ] Chunk and embed parser-derived units.
-- [ ] Persist a versioned vector index with content hashes.
-- [ ] Combine lexical, semantic, and graph scores.
-- [ ] Add reranking, diversity, and duplicate suppression.
-- [ ] Provide an offline mode that does not require hosted embeddings.
-- [ ] Measure retrieval quality and latency before making savings claims.
+- [x] Define local and hosted embedding adapters.
+- [x] Chunk and embed parser-derived units.
+- [x] Persist a versioned vector index with content hashes.
+- [x] Combine lexical, semantic, and graph scores.
+- [x] Add reranking, diversity, and duplicate suppression.
+- [x] Provide an offline mode that does not require hosted embeddings.
+- [x] Measure retrieval quality and latency before making savings claims.
 
 ### P2-05 Provider Prompt Caching
 
-- [ ] Create stable cacheable prompt prefixes.
-- [ ] Add provider-specific cache-control metadata.
-- [ ] Track cache writes, reads, misses, token counts, latency, and cost.
-- [ ] Separate the local retrieval cache from provider prompt caching in all terminology.
-- [ ] Add cold/warm tests and fallback behavior for unsupported providers.
+- [x] Create stable cacheable prompt prefixes.
+- [x] Add provider-specific cache-control metadata.
+- [x] Track cache writes, reads, misses, token counts, latency, and cost.
+- [x] Separate the local retrieval cache from provider prompt caching in all terminology.
+- [x] Add cold/warm tests and fallback behavior for unsupported providers.
 
 ## Phase 3: Measurement And Claims
 
 ### P3-01 Reproducible Benchmark Harness
 
-- [ ] Create a frozen task corpus and repository fixtures.
-- [ ] Record model, provider, version, configuration, git revision, cache state, and random seed.
-- [ ] Capture every request step, selected context, token category, latency, retries, and cost.
-- [ ] Store raw machine-readable JSONL or equivalent results.
-- [ ] Define correctness and quality grading.
-- [ ] Run multiple samples and report variance.
-- [ ] Add a documented reproduction command.
+- [x] Create a frozen task corpus and repository fixtures.
+- [x] Record model, provider, version, configuration, git revision, cache state, and random seed.
+- [x] Capture every request step, selected context, token category, latency, retries, and cost.
+- [x] Store raw machine-readable JSONL or equivalent results.
+- [x] Define correctness and quality grading.
+- [x] Run multiple samples and report variance.
+- [x] Add a documented reproduction command.
 
 ### P3-02 Retrieval Ablations
 
