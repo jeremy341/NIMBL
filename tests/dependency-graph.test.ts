@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { buildDependencyGraph } from "@/core/dependency-graph"
+import { buildDependencyGraph, buildDependencyGraphCooperative } from "@/core/dependency-graph"
+
+const fixture = [
+  { path: "src/main.ts", source: "import { helper } from './lib'\nexport function main() { return helper() }" },
+  { path: "src/lib.ts", source: "export function helper() { return 2 }" },
+  { path: "src/util.ts", source: "export const value = 1" },
+]
 
 describe("dependency graph", () => {
   it("builds stable file and symbol identities", () => {
@@ -85,5 +91,17 @@ describe("dependency graph", () => {
     expect(capped.length).toBeLessThanOrEqual(2)
     expect(capped.reduce((total, entry) => total + entry.excerpt.length, 0)).toBeLessThanOrEqual(500)
     expect(capped.length).toBe(2)
+  })
+
+  it("builds the same graph cooperatively while yielding to the event loop", async () => {
+    const sync = buildDependencyGraph(fixture)
+    let yields = 0
+    const coop = await buildDependencyGraphCooperative(fixture, async () => { yields++ }, 1)
+    expect(coop.fileCount()).toBe(sync.fileCount())
+    expect(coop.symbolCount()).toBe(sync.symbolCount())
+    expect(coop.edgeCount()).toBe(sync.edgeCount())
+    expect(coop.expandFrom(["src/main.ts"], 10_000).map((entry) => entry.path))
+      .toEqual(sync.expandFrom(["src/main.ts"], 10_000).map((entry) => entry.path))
+    expect(yields).toBeGreaterThanOrEqual(fixture.length)
   })
 })

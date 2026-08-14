@@ -2,7 +2,7 @@ import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import { stepCountIs, streamText, tool } from "ai"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { basename, dirname, resolve } from "node:path"
+import { basename, dirname } from "node:path"
 import { z } from "zod"
 import { compatibilityIssues, getProvider, resolveModel, type ProviderModel } from "./providers"
 import { selectProjectContextWithBudget, type ProjectContextIndex } from "./context"
@@ -16,6 +16,9 @@ import { runShellCommand } from "./shell"
 import { fitRequestToBudget, type RequestBudgetBreakdown } from "./request-budget"
 import { countTextTokens } from "./tokenizers"
 import { buildCachedPrompt } from "./prompt-cache"
+import { compressContext, type CompressionMode } from "./token-compression"
+import { availableSkillGuidance, discoverSkills, loadSkill } from "./skills"
+import type { NimblSettings } from "./settings"
 
 export type AgentMode = "build" | "plan" | "explain" | "learn"
 export type ApprovalChoice = "once" | "always" | "reject"
@@ -27,7 +30,7 @@ export interface AgentMessage {
 
 export interface PermissionRequest {
   id: string
-  tool: "read" | "glob" | "grep" | "write" | "edit" | "apply_patch" | "bash" | "webfetch" | "skill" | "question" | "todowrite"
+  tool: "read" | "glob" | "grep" | "write" | "edit" | "apply_patch" | "bash" | "webfetch" | "websearch" | "skill" | "question" | "todowrite" | "delegate"
   title: string
   detail: string
   diff?: string
@@ -61,7 +64,8 @@ export interface AgentRunOptions {
   summary?: string
   onEvent: (event: AgentEvent) => void
   requestApproval: (request: PermissionRequest) => Promise<ApprovalChoice>
-  askQuestion?: (question: { id: string; prompt: string; options: string[] }) => Promise<string>
+  askQuestion?: (question: { id: string; prompt: string; options: string[]; freeform?: boolean }) => Promise<string>
+  delegateTask?: (request: { id: string; prompt: string; agent?: AgentMode }) => Promise<string>
   onFileChange?: (change: { path: string; before: string; after: string; beforeExists: boolean; afterExists: boolean }) => void
   onFileChanges?: (changes: { path: string; before: string; after: string; beforeExists: boolean; afterExists: boolean }[]) => void
   learning?: LearningState
@@ -71,6 +75,15 @@ export interface AgentRunOptions {
   contextIndex?: ProjectContextIndex
   onRetry?: (retry: { attempt: number; message: string }) => void
   retryDelayMs?: number
+  maxToolSteps?: number
+  maxAttempts?: number
+  maxTokens?: number
+  doomLoopThreshold?: number
+  runID?: string
+  parentTaskID?: string
+  onTaskEvent?: (event: { type: "step" | "budget" | "doom-loop"; detail: string }) => void
+  compression?: CompressionMode
+  settings?: NimblSettings
 }
 
 export interface AgentRunResult {
@@ -104,8 +117,8 @@ const MAX_TOOL_STEPS = 12
 const MAX_ATTEMPTS = 3
 
 const MODE_TOOLS: Record<AgentMode, readonly PermissionRequest["tool"][]> = {
-  build: ["read", "glob", "grep", "write", "edit", "apply_patch", "bash", "webfetch", "skill", "question", "todowrite"],
-  plan: ["read", "glob", "grep", "webfetch", "skill", "question", "todowrite"],
+  build: ["read", "glob", "grep", "write", "edit", "apply_patch", "bash", "webfetch", "websearch", "skill", "question", "todowrite", "delegate"],
+  plan: ["read", "glob", "grep", "webfetch", "websearch", "skill", "question", "todowrite", "delegate"],
   explain: ["read", "glob", "grep", "skill", "question"],
   learn: ["read", "skill", "question", "todowrite"],
 }
@@ -141,12 +154,39 @@ function budgetPromptParts(text: string) {
 
 function toolID() { return Math.random().toString(36).slice(2, 10) }
 
-function retryable(error: unknown) {
+export function retryable(error: unknown) {
   if (error instanceof TypeError) return true
   if (!error || typeof error !== "object") return false
+  const name = "name" in error ? String((error as { name?: unknown }).name) : ""
+  // The AI SDK collapses an exhausted retry or an empty stream into
+  // NoOutputGeneratedError; the underlying cause carries the 429/5xx status.
+  if (name === "AI_NoOutputGeneratedError" || name === "AI_RetryError") {
+    const status = "statusCode" in error ? Number((error as { statusCode?: unknown }).statusCode)
+      : "status" in error ? Number((error as { status?: unknown }).status)
+      : 0
+    if (status === 408 || status === 409 || status === 429 || status >= 500) return true
+    const message = error instanceof Error ? error.message : ""
+    return /rate limit|too many requests|overloaded|temporarily|ECONN|ETIMEDOUT|EAI_AGAIN|429|50\d/i.test(message)
+  }
   const status = "statusCode" in error ? Number(error.statusCode) : "status" in error ? Number(error.status) : 0
   const code = "code" in error ? String(error.code) : ""
   return status === 408 || status === 409 || status === 429 || status >= 500 || ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN"].includes(code)
+}
+
+/** Convert an AI SDK stream error part into a readable provider error. */
+export function describeStreamError(error: unknown, provider: string, model: string): Error {
+  const status = error && typeof error === "object" && "statusCode" in error ? Number((error as { statusCode?: unknown }).statusCode) : 0
+  const message = error instanceof Error ? error.message : error && typeof error === "object" && "message" in error
+    ? String((error as { message?: unknown }).message)
+    : ""
+  if (status === 429) {
+    return new Error(`Rate limit exceeded for ${provider}/${model}. Wait a moment and retry.${message ? ` (${message})` : ""}`)
+  }
+  if (status >= 500) {
+    return new Error(`${provider} returned a server error (HTTP ${status}). Retrying may help.${message ? ` (${message})` : ""}`)
+  }
+  if (message) return new Error(`${provider} request failed: ${message}`)
+  return new Error(`No output generated by ${provider}/${model}. The provider closed the stream without a response.`)
 }
 
 function wait(ms: number, signal?: AbortSignal) {
@@ -212,15 +252,6 @@ function safeURL(value: string) {
   return url
 }
 
-function skillFile(root: string, name: string) {
-  if (!/^[a-z0-9][a-z0-9_-]*$/i.test(name)) throw new Error("Skill names may contain letters, numbers, _ and - only.")
-  const file = resolve(root, ".nimbl", "skills", name, "SKILL.md")
-  const target = resolveProjectPath(root, file)
-  const expected = `.nimbl/skills/${name}/SKILL.md`
-  if (target.rel !== expected) throw new Error("Skill must resolve to its canonical project skill file.")
-  return target.full
-}
-
 function patchPaths(root: string, patch: string) {
   const paths = new Set<string>()
   for (const match of patch.matchAll(/^\+\+\+\s+(?:b\/)?([^\s]+)|^---\s+(?:a\/)?([^\s]+)/gm)) {
@@ -240,6 +271,7 @@ async function applyUnifiedPatch(root: string, patch: string) {
 
 export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult> {
   let attemptActivity = false
+  const repeatedToolCalls = new Map<string, number>()
   const emitTool = (event: Omit<ToolEvent, "kind">) => {
     attemptActivity = true
     options.onEvent({ kind: "tool", ...event })
@@ -417,17 +449,39 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "webfetch", state: "failed", title: "Fetch " + url, detail: message }); return "Error: " + message }
       },
     }),
+    websearch: tool({
+      description: "Search public web pages for current information and return compact result titles and URLs.",
+      inputSchema: z.object({ query: z.string().min(1), maxResults: z.number().int().positive().max(8).optional() }),
+      execute: async ({ query, maxResults }) => {
+        const event = toolID(); emitTool({ id: event, tool: "websearch", state: "running", title: "Search web", detail: query })
+        try {
+          await approve("websearch", "Search web", query, undefined, "duckduckgo")
+          const url = new URL("https://html.duckduckgo.com/html/"); url.searchParams.set("q", query)
+          const response = await fetch(url, { signal: options.abortSignal, headers: { "User-Agent": "NIMBL/0.1" } }); if (!response.ok) throw new Error(`HTTP ${response.status}`)
+          const html = await response.text(); const results: string[] = []; const expression = /result__a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
+          for (const match of html.matchAll(expression)) { const title = match[2]!.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").trim(); if (title) results.push(`${title}\n${match[1]}`); if (results.length >= (maxResults || 5)) break }
+          const output = results.join("\n\n") || "No web results found."; emitTool({ id: event, tool: "websearch", state: "completed", title: `Found ${results.length} results`, output }); return output
+        } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "websearch", state: "failed", title: "Search web", detail: message }); return "Error: " + message }
+      },
+    }),
     skill: tool({
-      description: "Load a project-local NIMBL skill from .nimbl/skills/<name>/SKILL.md.",
-      inputSchema: z.object({ name: z.string() }),
+      description: "Load a specialized project, global, or configured skill. Skills provide specialized instructions and workflows for specific tasks. Returns the skill body, its base directory, and its related files.",
+      inputSchema: z.object({ name: z.string().describe("The name of the skill from the available skills list") }),
       execute: async ({ name }) => {
         const event = toolID(); emitTool({ id: event, tool: "skill", state: "running", title: "Load skill " + name })
         try {
-          const file = skillFile(options.root, name)
-          await approve("skill", "Load skill " + name, "Read this project-local skill.", undefined, name)
-          if (!existsSync(file)) throw new Error(`No project skill named "${name}".`)
-          const output = clip(readFileSync(file, "utf8"), 16_000)
-          emitTool({ id: event, tool: "skill", state: "completed", title: "Loaded skill " + name, output })
+          await approve("skill", "Load skill " + name, "Read this skill.", undefined, name)
+          const loaded = loadSkill(options.root, name, options.settings)
+          const output = [
+            `<skill_content name="${loaded.name}">`,
+            loaded.content.trim(),
+            "",
+            `Base directory for this skill: ${loaded.directory}`,
+            "Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.",
+            loaded.files.length ? `<skill_files>\n${loaded.files.map((file) => `<file>${file}</file>`).join("\n")}\n</skill_files>` : "",
+            "</skill_content>",
+          ].filter(Boolean).join("\n")
+          emitTool({ id: event, tool: "skill", state: "completed", title: "Loaded skill " + loaded.name, output })
           return output
         } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "skill", state: "failed", title: "Load skill " + name, detail: message }); return "Error: " + message }
       },
@@ -445,15 +499,24 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "todowrite", state: "rejected", title: "Update task list", detail: message }); return "Error: " + message }
       },
     }),
+    delegate: tool({
+      description: "Delegate a research or implementation task to a child NIMBL session. Child work is limited by provider context/output, tool steps, approvals, and delegation depth—not an arbitrary aggregate token cap.",
+      inputSchema: z.object({ prompt: z.string().min(1), agent: z.enum(["build", "plan", "explain", "learn"]).optional() }),
+      execute: async ({ prompt, agent }) => {
+        const event = toolID(); emitTool({ id: event, tool: "delegate", state: "running", title: "Delegate task", detail: prompt })
+        try { await approve("delegate", "Delegate task", prompt, undefined, "child session"); if (!options.delegateTask) throw new Error("Subagent delegation is not configured for this runner."); const result = await options.delegateTask({ id: event, prompt, agent }); emitTool({ id: event, tool: "delegate", state: "completed", title: "Child task completed", output: result }); return result }
+        catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "delegate", state: "failed", title: "Delegate task", detail: message }); return "Error: " + message }
+      },
+    }),
     question: tool({
       description: "Ask the user a focused multiple-choice question when a decision cannot be made safely from the project context.",
-      inputSchema: z.object({ prompt: z.string().min(1), options: z.array(z.string().min(1)).min(2).max(6) }),
-      execute: async ({ prompt, options: answers }) => {
+      inputSchema: z.object({ prompt: z.string().min(1), options: z.array(z.string().min(1)).min(2).max(6).optional(), freeform: z.boolean().optional() }),
+      execute: async ({ prompt, options: answers, freeform }) => {
         const event = toolID(); emitTool({ id: event, tool: "question", state: "running", title: "Question", detail: prompt })
         try {
           await approve("question", "Question for the user", prompt)
           if (!options.askQuestion) throw new Error("The current interface cannot ask interactive questions.")
-          const answer = await options.askQuestion({ id: event, prompt, options: answers })
+          const answer = await options.askQuestion({ id: event, prompt, options: answers || [], freeform })
           emitTool({ id: event, tool: "question", state: "completed", title: "Answered question", detail: answer })
           return answer
         } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "question", state: "rejected", title: "Question", detail: message }); return "Error: " + message }
@@ -468,16 +531,19 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   const rawHistory = options.messages.slice(-30)
   const splitHistory = rawHistory.map((message) => budgetPromptParts(message.text))
   const selectedContext = await selectProjectContextWithBudget(options.root, options.messages.at(-1)?.text || "", 12, Math.min(modelDefinition.contextWindow * 4, 500_000), { index: options.contextIndex })
+  const skillGuidance = availableSkillGuidance(discoverSkills(options.root, options.settings).filter((skill) => permissionFor(options.permissions, { tool: "skill", target: skill.name }) !== "deny"))
   const systemInstructions = [
     "You are NIMBL, a token-efficient coding companion. Work inside the current project using tools before making claims about its code.",
     ASSISTANT_RESPONSE_STYLE,
     modePrompt(options.mode),
     "Use read, glob, grep, and project-local skills selectively. Keep tool output focused. Use todowrite for multi-step work. Use question only when a user decision is necessary. Use edit for focused changes, write for new or whole-file content, and apply_patch only for a valid unified diff.",
-    "Current permission policy: " + ["read", "glob", "grep", "edit", "write", "bash", "webfetch", "skill", "question"].map((name) => `${name}=${permissionExplanation(options.permissions, { tool: name })}`).join(", "),
+    "Current permission policy: " + ["read", "glob", "grep", "edit", "write", "bash", "webfetch", "websearch", "skill", "question", "delegate"].map((name) => `${name}=${permissionExplanation(options.permissions, { tool: name })}`).join(", "),
     teachingPrompt(options.learning || { concepts: {} }),
+    skillGuidance,
   ]
   const projectInstructionText = projectInstructions(options.root)
-  const retrievalLowToHigh = selectedContext.items.map((item) => `# ${item.path} — ${item.reason}\n${item.excerpt}`).reverse()
+  const compressedContext = compressContext(selectedContext.items, modelDefinition, 12_000, options.compression || "structural")
+  const retrievalLowToHigh = selectedContext.items.map((item, index) => `# ${item.path} — ${item.reason}\n${compressedContext.items[index]?.text || item.excerpt}`).reverse()
   const fitted = fitRequestToBudget(modelDefinition, {
     systemInstructions,
     toolSchemas: Object.entries(availableTools).map(([name, value]) => {
@@ -505,7 +571,8 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   let text = ""
   let reasoning = ""
   const startedAt = Date.now()
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  const maxAttempts = options.maxAttempts ?? MAX_ATTEMPTS
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     attemptActivity = false
     try {
       const result = streamText({
@@ -515,16 +582,31 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         tools: availableTools,
         maxOutputTokens: fitted.budget.outputReservation,
         providerOptions: cachedPrompt.providerOptions,
+        // NIMBL owns retries/backoff for transient provider failures so a rate
+        // limit or gateway error surfaces with a clear message instead of the
+        // AI SDK's internal retry noise and a generic "No output generated".
+        maxRetries: 0,
         prepareStep: ({ messages, instructions }) => {
           const dynamicTokens = countTextTokens(JSON.stringify({ instructions, messages }), modelDefinition).tokens
           const projected = dynamicTokens + fitted.budget.toolSchemas + fitted.budget.outputReservation + fitted.budget.safetyMargin
           if (projected > modelDefinition.contextWindow) throw new Error(`Tool-loop context reached ${projected} tokens, above ${modelDefinition.name}'s ${modelDefinition.contextWindow}-token window.`)
           return {}
         },
-        stopWhen: stepCountIs(MAX_TOOL_STEPS),
+        stopWhen: stepCountIs(Math.min(MAX_TOOL_STEPS, options.maxToolSteps ?? MAX_TOOL_STEPS)),
         abortSignal: options.abortSignal,
       })
       for await (const part of result.fullStream) {
+        if (part.type === "error") {
+          throw describeStreamError((part as { error?: unknown }).error, options.provider, options.model)
+        }
+        if (part.type === "tool-call") {
+          const call = part as unknown as { toolName?: string; input?: unknown; args?: unknown }
+          const fingerprint = JSON.stringify([call.toolName, call.input ?? call.args])
+          const count = (repeatedToolCalls.get(fingerprint) || 0) + 1
+          repeatedToolCalls.set(fingerprint, count)
+          options.onTaskEvent?.({ type: "step", detail: `${call.toolName || "tool"} step ${count}` })
+          if (count >= (options.doomLoopThreshold ?? 3)) { options.onTaskEvent?.({ type: "doom-loop", detail: `Repeated ${call.toolName || "tool"} call detected.` }); throw new Error("Agent stopped after repeating the same tool call; review the result or provide a new instruction.") }
+        }
         if (part.type === "text-delta") {
           const delta = stripEmojis(part.text)
           if (delta) { attemptActivity = true; text += delta; options.onEvent({ kind: "text", delta }) }
@@ -534,9 +616,16 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           if (delta) { attemptActivity = true; reasoning += delta; options.onEvent({ kind: "reasoning", delta }) }
         }
       }
-      const usage = await result.usage
+      let usage
+      try {
+        usage = await result.usage
+      } catch (error) {
+        throw describeStreamError(error, options.provider, options.model)
+      }
       const inputTokens = usage.inputTokens || 0
       const outputTokens = usage.outputTokens || 0
+      const totalTokens = usage.totalTokens ?? inputTokens + outputTokens
+      if (options.maxTokens !== undefined && totalTokens > options.maxTokens) { options.onTaskEvent?.({ type: "budget", detail: `Token budget ${options.maxTokens} exceeded by ${totalTokens}.` }); throw new Error(`Agent token budget exceeded (${totalTokens}/${options.maxTokens}).`) }
       const inputDetails = usage.inputTokenDetails || {}
       const outputDetails = usage.outputTokenDetails || {}
       const finalStep = result.finalStep ? await result.finalStep : undefined
@@ -547,7 +636,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         usage: {
           inputTokens,
           outputTokens,
-          totalTokens: usage.totalTokens ?? inputTokens + outputTokens,
+          totalTokens,
           noCacheTokens: inputDetails.noCacheTokens,
           cacheReadTokens: inputDetails.cacheReadTokens,
           cacheWriteTokens: inputDetails.cacheWriteTokens,
@@ -566,12 +655,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         retrieval: selectedContext.telemetry,
       }
     } catch (error) {
-      if (attemptActivity || attempt === MAX_ATTEMPTS || options.abortSignal?.aborted || !retryable(error)) throw error
+      if (attemptActivity || attempt === maxAttempts || options.abortSignal?.aborted || !retryable(error)) throw error
       const message = error instanceof Error ? error.message : String(error)
       options.onRetry?.({ attempt: attempt + 1, message })
       await wait((options.retryDelayMs ?? 500) * 2 ** (attempt - 1), options.abortSignal)
-    }
-  }
+    }  }
   throw new Error("Agent execution failed.")
 }
 

@@ -23,7 +23,10 @@ export async function checkProviderHealth(provider: ProviderDefinition, apiKey: 
   const abort = () => controller.abort()
   options.signal?.addEventListener("abort", abort, { once: true })
   try {
-    const response = await (options.fetcher ?? fetch)(provider.baseURL.replace(/\/$/, "") + provider.health.path, { signal: controller.signal, headers: { ...provider.headers, ...(provider.local ? {} : { Authorization: `Bearer ${apiKey}` }) } })
+    const auth: Record<string, string> = provider.local ? {} : provider.protocol === "anthropic"
+      ? { "x-api-key": apiKey, "anthropic-version": "2023-06-01" }
+      : { Authorization: `Bearer ${apiKey}` }
+    const response = await (options.fetcher ?? fetch)(provider.baseURL.replace(/\/$/, "") + provider.health.path, { signal: controller.signal, headers: { ...provider.headers, ...auth } })
     if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`)
     const body = await response.json().catch(() => ({})) as { data?: Array<{ id?: string }>; models?: Array<{ name?: string }> }
     const discoveredModels = body.data?.map((item) => item.id).filter((id): id is string => Boolean(id)) ?? body.models?.map((item) => item.name).filter((id): id is string => Boolean(id))

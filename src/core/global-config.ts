@@ -6,6 +6,9 @@ export interface GlobalConfig {
   provider?: string
   model?: string
   providerKeys?: Record<string, string>
+  favoriteModels?: string[]
+  recentModels?: string[]
+  thinkingMode?: "show" | "hide"
 }
 
 export function globalConfigPath() {
@@ -28,6 +31,13 @@ export function loadGlobalConfig(file = globalConfigPath()): GlobalConfig {
       provider: typeof value.provider === "string" ? value.provider : undefined,
       model: typeof value.model === "string" ? value.model : undefined,
       providerKeys,
+      favoriteModels: Array.isArray(value.favoriteModels)
+        ? value.favoriteModels.filter((item): item is string => typeof item === "string")
+        : undefined,
+      recentModels: Array.isArray(value.recentModels)
+        ? value.recentModels.filter((item): item is string => typeof item === "string")
+        : undefined,
+      thinkingMode: value.thinkingMode === "show" || value.thinkingMode === "hide" ? value.thinkingMode : undefined,
     }
   } catch {
     return {}

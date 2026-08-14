@@ -79,7 +79,7 @@ flowchart TD
 | Home | prompt, / autocomplete, Ctrl+P, provider/model status | Working |
 | Prompt | text submit, Build/Plan toggle with Tab, slash list | Partial: no @file, !command, attachments, history navigation, or external editor |
 | Model/provider | centered searchable picker, mouse hover/click/wheel, API-key form | Working for static providers; no OAuth or live catalog |
-| Timeline | scrollable messages, streamed text/tool/reasoning cards, click actions | Partial: no markdown links/tables, folded content, or per-part actions |
+| Timeline | scrollable messages, streamed text/tool/reasoning cards, click actions | Working baseline: native Markdown/code/diff rendering, folded reasoning/output/tool cards, message actions, and child-agent navigation; richer link actions remain |
 | Message action dialog | Copy, Fork, conversation-only Revert, Edit and resend | Partial: lacks OpenCode Git-backed revert and part/file-level actions |
 | Tool approval | diff preview; once/always/reject | Partial: settings policy is not evaluated per tool/path/command |
 | Sessions | auto-save, resume with -s, picker, rename/fork/pin/delete commands | Partial: no row actions, search metadata, quick slots, delete confirmation, tags, or workspaces |
@@ -170,12 +170,12 @@ The score is held back by interaction completeness:
 | Full prompt editor | Partial | prompt history, cursor/editor controls, paste UX, /editor |
 | @file references and !bash prompt parts | Missing | autocomplete, safe execution, visible attachment chips |
 | Rich markdown, code languages, OSC links | Partial | renderer with links, tables, blockquotes, language highlighting, copy code |
-| File/tool cards and diff UI | Partial | collapse/expand, file previews, diff accept/reject, tool details |
+| File/tool cards and diff UI | Working baseline | Completed block tools collapse from a clickable header, long output folds independently, reasoning folds, and diffs open natively; accept/reject remains permission-gated |
 | Timeline and message menu | Partial | working actions; add per-part entries and Git-backed reversion |
 | Permission and question dialogs | Partial | pattern-aware policy, question form/multi-choice UI, auto mode |
 | Session browser | Partial | search ranking, in-list actions, metadata, tags, quick keys |
 | Workspace/worktree UI | Missing | create/move/list/inspect workspace copies |
-| Agent/subagent activity | Missing | task cards, child sessions, background state |
+| Agent/subagent activity | Working baseline | Delegation creates persisted child sessions and task records; `/subagents`, child footer navigation, cancellation, and clickable child-agent cards are available |
 | Command palette/keymaps | Partial | config-driven bindings, leader key/which-key, reference |
 | Themes | Partial | custom theme files, live switch, terminal/system palette |
 | Diagnostics | Partial | context inclusion explanation, live cache/cost/latency, model variants |
@@ -196,13 +196,13 @@ The score is held back by interaction completeness:
 | Context intelligence | Partial | semantic retrieval, dependency graph, AST compression, prompt cache and rationale |
 | Teaching memory | Partial | learner profile, misconceptions, Socratic checkpoints, goals, quizzes, privacy |
 | Provider routing | Partial | capability/cost/privacy/latency routing with a visible rationale |
-| Subagents/background work | Missing | agents, tasks, child sessions, cancellation, activity events |
+| Subagents/background work | Working baseline | Agent/task registry, child sessions, recursive depth guard, cancellation, activity events, and unlimited aggregate child-token budget are implemented |
 | MCP | Declaration only | client/server lifecycle, stdio/HTTP/OAuth, tool conversion, policy |
 | Plugins/hooks | Declaration only | install/load order, hook API, isolation, custom tools/events |
 | LSP | Declaration only | server lifecycle, definition/reference/hover/symbol calls |
 | Skills/custom commands | Partial | command files/frontmatter, interpolation, skill discovery/load permissions |
-| Worktrees/workspaces | Missing | Git worktree lifecycle and file-change safeguards |
-| Share/service/API | Missing | hosted sharing, privacy/retention, API/server, web and ACP/IDE |
+| Worktrees/workspaces | Working baseline | Git worktree create/list/remove/prune UI and dirty-tree safeguards are implemented |
+| Share/service/API | Partial | Redacted hosted share/unshare client is implemented behind `NIMBL_SHARE_URL`; a compatible hosted service and web/ACP/IDE clients are still external |
 | GitHub/GitLab/PR integrations | Missing | auth, PR/issue workflow, review context |
 | Observability/reliability | Missing | structured log, retries/backoff, diagnostics, performance metrics |
 

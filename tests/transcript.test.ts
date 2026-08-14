@@ -62,4 +62,44 @@ describe("assistant transcript parts", () => {
     expect(updated.parts?.[1]).not.toBe(text)
     expect(updated.parts?.[1]).toMatchObject({ text: "Hello world" })
   })
+
+  it("stamps started/ended timestamps on tool parts for duration display", () => {
+    const message: StoredMessage = {
+      id: "assistant",
+      role: "assistant",
+      text: "",
+      time: 100,
+      parts: [],
+    }
+    const events: AgentEvent[] = [
+      { kind: "tool", id: "task-1", tool: "delegate", state: "running", title: "Subagent Task — investigate" },
+      { kind: "tool", id: "task-1", tool: "delegate", state: "completed", title: "Subagent Task — investigate", output: "done" },
+    ]
+    let sequence = 0
+    const updated = reduceAssistantEvents(message, events, () => `part-${++sequence}`, () => 500)
+
+    const toolPart = updated.parts?.find((part) => part.type === "tool")
+    expect(toolPart).toMatchObject({ id: "task-1", started: 500, ended: 500, state: "completed" })
+    // The running event stamps `started`; the completed event keeps it and adds `ended`.
+    expect((toolPart as { started?: number }).started).toBe(500)
+    expect((toolPart as { ended?: number }).ended).toBe(500)
+  })
+
+  it("finishAssistant closes running tool parts like reasoning parts", () => {
+    const message: StoredMessage = {
+      id: "assistant",
+      role: "assistant",
+      text: "",
+      time: 100,
+      parts: [
+        { id: "running-tool", type: "tool", tool: "bash", state: "running", title: "Run command", started: 150 },
+        { id: "done-tool", type: "tool", tool: "read", state: "completed", title: "Read", started: 160, ended: 170 },
+      ],
+    }
+
+    expect(finishAssistant(message, 300).parts).toMatchObject([
+      { id: "running-tool", state: "completed", ended: 300 },
+      { id: "done-tool", state: "completed", ended: 170 },
+    ])
+  })
 })

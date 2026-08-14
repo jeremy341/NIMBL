@@ -6,6 +6,12 @@ import { theme } from "./theme"
 
 export type ToastVariant = "info" | "success" | "warning" | "error"
 
+export function toastError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error === "string" && error) return error
+  return "An unknown error has occurred"
+}
+
 export interface ToastProps {
   toast?: { title?: string; message: string; variant: ToastVariant }
 }

@@ -68,8 +68,8 @@ Zero-setup distribution is a product goal. The current repository is private-pac
 The following mechanisms are proposed and require implementation plus controlled validation:
 
 1. **Semantic search + graph traversal** — not implemented; current retrieval is lexical
-2. **AST compression** — not implemented; current compression uses regex line filtering
-3. **Provider prompt caching** — not implemented; the local retrieval cache does not reduce provider input tokens
+2. **AST/structural compression** — implemented as parser-backed structural chunks plus a declaration-preserving compression fallback; percentage claims remain benchmark-gated
+3. **Provider prompt caching** — implemented as stable-prefix/provider metadata support; local retrieval caching remains a separate mechanism
 4. **No automatic project maps or file dumps** — implemented as a current design constraint
 
 ### 2.2 Learning Companion (vs Code Generator)
@@ -682,10 +682,10 @@ Future versions may add client-side failover if FreeLLMAPI proves unreliable or 
 | Original Plan | Actual |
 |---------------|--------|
 | Multi-provider aggregation (Section 13) | Not built. Relies on FreeLLMAPI server for routing. |
-| AST compression (tree-sitter WASM) | Deferred to v0.2. Not needed for basic chat. |
-| Semantic search + graph RAG | Deferred. Future feature. |
-| Learning system (skill tree, spaced repetition) | Deferred. Research complete, implementation pending. |
-| Config file (nimbl.json) | Not built. CLI args + env vars + hardcoded defaults suffice. |
+| AST/structural compression | Implemented in `token-compression.ts` with benchmark-gated claims. |
+| Semantic search + graph RAG | Implemented in the hybrid retrieval/context index. |
+| Learning system (skills, misconceptions, quizzes, retention) | Implemented in `learning.ts`; the TUI surface remains a separate concern. |
+| Project config | Implemented in `.nimbl/config.json` and `nimbl.config.json` with diagnostics/watch support. |
 | Desktop/Electron app | Deferred. |
 | Web interface | Deferred. |
 
@@ -793,7 +793,7 @@ Rendered in forest green (`#06402b`) on black (`#0a0a0a`).
 | `@opentui/solid` patches lost on `bun install` | Requires manual re-patch after install | Workaround (baked into bundle) |
 | Non-OpenAI tokenizer families are estimated | Preflight counts include a conservative safety margin | Explicit fallback |
 | Semantic/graph/AST retrieval is absent | Context relevance remains lexical | Planned |
-| Provider prompt caching is absent | Repeated provider input is not cache-optimized deliberately | Planned |
+| Provider prompt caching is provider-dependent | Stable prefix and cache metadata are emitted; providers may ignore hints | Explicit behavior |
 | Compiled `.js`/`.d.ts` files in `src/` | Stale build artifacts from earlier `tsc` runs; can cause stale test runs | Cleanup needed |
 
 ### 16.2 Technical Debt

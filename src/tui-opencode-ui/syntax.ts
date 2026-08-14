@@ -3,6 +3,8 @@ import { theme } from "./theme"
 
 export const syntaxStyle = SyntaxStyle.fromTheme([
   { scope: ["extmark.paste"], style: { foreground: theme.primaryForeground, bold: true } },
+  { scope: ["extmark.file"], style: { foreground: theme.markdownLink, bold: true } },
+  { scope: ["extmark.agent"], style: { foreground: theme.secondary, bold: true } },
   { scope: ["comment"], style: { foreground: theme.syntaxComment, italic: true } },
   { scope: ["keyword", "keyword.modifier", "keyword.directive"], style: { foreground: theme.syntaxKeyword } },
   { scope: ["function", "function.call", "method", "method.call"], style: { foreground: theme.syntaxFunction } },

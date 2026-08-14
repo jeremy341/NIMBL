@@ -3,7 +3,7 @@ import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs"
 import { dirname, join, relative } from "node:path"
 import { resolveUnprotectedProjectPath } from "./project-path"
 import { structuralChunks, type StructuralChunk } from "./structural-context"
-import { buildDependencyGraph, type DependencyGraph } from "./dependency-graph"
+import { buildDependencyGraphCooperative, type DependencyGraph } from "./dependency-graph"
 import { createEmbedder, type EmbeddingAdapter } from "./embeddings"
 import { buildVectorIndex, isCurrentVectorIndex, loadVectorIndex, saveVectorIndex, searchVectorIndex, unitsFromSources, type StoredVectorIndex } from "./vector-index"
 import { hybridRerank } from "./hybrid-retrieval"
@@ -66,6 +66,10 @@ const CACHE_TTL_MS = 60_000
 const MAX_FILE_BYTES = 256_000
 const SUPPORTED = new Set(["ts", "tsx", "js", "jsx", "json", "md", "py", "go", "rs"])
 const defaultIndexes = new Map<string, ProjectContextIndex>()
+
+function yieldToEventLoop() {
+  return new Promise<void>((resolve) => setImmediate(resolve))
+}
 
 function terms(input: string) {
   return [...new Set(input.toLowerCase().match(/[a-z][a-z0-9_-]{2,}/g)?.filter((word) => !STOP_WORDS.has(word)) || [])]
@@ -152,6 +156,7 @@ class IndexedProjectContext implements ProjectContextIndex {
     const telemetry = emptyTelemetry(this.generation, started)
     const files = new Map<string, IndexedFile>()
     await this.loadIgnoreRules()
+    let scanned = 0
     for await (const rawPath of new Bun.Glob("**/*").scan({ cwd: this.root, onlyFiles: true, dot: true })) {
       const path = rawPath.replaceAll("\\", "/")
       telemetry.scannedFiles++
@@ -164,9 +169,17 @@ class IndexedProjectContext implements ProjectContextIndex {
         files.set(target.rel, { path: target.rel, content, lower: content.toLowerCase(), chunks: structuralChunks(target.rel, content) })
         telemetry.indexedFiles++
       } catch { telemetry.blockedFiles++ }
+      // Yield to the event loop periodically so long first-time index builds
+      // (Babel parses + dependency graph) never block the UI spinner or input.
+      if (++scanned % 64 === 0) await yieldToEventLoop()
     }
     this.files = files
-    this.graph = this.graphEnabled ? buildDependencyGraph([...files.values()].map((file) => ({ path: file.path, source: file.content }))) : undefined
+    if (this.graphEnabled) {
+      const sources = [...files.values()].map((file) => ({ path: file.path, source: file.content }))
+      // The dependency graph is CPU-heavy; let the event loop breathe between
+      // parse batches so the working animation keeps running.
+      this.graph = await buildDependencyGraphCooperative(sources, yieldToEventLoop)
+    }
     if (this.hybrid) {
       const sources = [...files.values()].map((file) => ({ path: file.path, source: file.content }))
       const units = unitsFromSources(sources)

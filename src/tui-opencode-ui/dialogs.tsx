@@ -14,6 +14,7 @@ import {
 import { Spinner } from "./spinner"
 import { theme } from "./theme"
 import type { CommandOption } from "./types"
+import { NativeDiff } from "./native"
 
 const SUBMIT_KEY_BINDINGS = [
   { name: "return", action: "submit" as const },
@@ -125,7 +126,8 @@ function matchesShortcut(event: any, shortcut: string) {
   return eventName(event) === parts.at(-1)
     && Boolean(event.ctrl) === parts.includes("ctrl")
     && Boolean(event.shift) === parts.includes("shift")
-    && Boolean(event.meta) === parts.includes("alt")
+    && Boolean(event.alt) === parts.includes("alt")
+    && Boolean(event.meta) === parts.includes("meta")
 }
 
 export function SelectDialog(props: SelectDialogProps) {
@@ -151,7 +153,7 @@ export function SelectDialog(props: SelectDialogProps) {
   })
   const filtered = createMemo(() => {
     const needle = query().trim().toLowerCase()
-    return source().filter((option) => matches(option, needle))
+    return source().filter((option) => !option.disabled && matches(option, needle))
   })
 
   const grouped = createMemo(() => {
@@ -176,7 +178,7 @@ export function SelectDialog(props: SelectDialogProps) {
     }, 0)
     return filtered().reduce((count, option) => count + 1 + (option.details?.length || 0), headers)
   })
-  const listHeight = createMemo(() => Math.min(rows(), Math.floor(dimensions().height / 2) - 6))
+  const listHeight = createMemo(() => Math.max(1, Math.min(rows(), Math.floor(dimensions().height / 2) - 6)))
 
   createEffect(() => {
     const options = filtered()
@@ -240,6 +242,18 @@ export function SelectDialog(props: SelectDialogProps) {
       event.preventDefault?.()
       event.stopPropagation?.()
       move(selected() - 1)
+      return
+    }
+    if (isKey(event, "pagedown")) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      move(selected() + 10)
+      return
+    }
+    if (isKey(event, "pageup")) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      move(selected() - 10)
       return
     }
     if (isKey(event, "home")) {
@@ -480,6 +494,34 @@ export function DetailDialog(props: DetailDialogProps) {
   )
 }
 
+export interface DiffDialogProps {
+  title: string
+  diff: string
+  filetype?: string
+  onClose: () => void
+}
+
+export function DiffDialog(props: DiffDialogProps) {
+  const dimensions = useTerminalDimensions()
+  useKeyboard((event) => {
+    if (!isKey(event, "escape", "esc")) return
+    event.preventDefault()
+    event.stopPropagation()
+    props.onClose()
+  })
+  return (
+    <box paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
+      <box flexDirection="row" justifyContent="space-between">
+        <text fg={theme.text} attributes={TextAttributes.BOLD}>{props.title}</text>
+        <text fg={theme.textMuted} onMouseUp={props.onClose}>esc</text>
+      </box>
+      <scrollbox maxHeight={Math.max(5, dimensions().height - 10)} flexShrink={1}>
+        <NativeDiff diff={props.diff} filetype={props.filetype} width={Math.min(112, dimensions().width - 6)} />
+      </scrollbox>
+    </box>
+  )
+}
+
 export interface ConfirmDialogProps {
   title: string
   message: string
@@ -659,5 +701,231 @@ export function TextPromptDialog(props: TextPromptDialogProps) {
         </Show>
       </box>
     </box>
+  )
+}
+
+export interface AlertDialogProps {
+  title: string
+  message: string
+  onConfirm?: () => void
+  onClose: () => void
+}
+
+export function AlertDialog(props: AlertDialogProps) {
+  function confirm() {
+    props.onConfirm?.()
+    props.onClose()
+  }
+
+  useKeyboard((event) => {
+    if (isKey(event, "return", "enter", "escape", "esc")) {
+      event.preventDefault()
+      event.stopPropagation()
+      confirm()
+    }
+  })
+
+  return (
+    <box paddingLeft={2} paddingRight={2} gap={1}>
+      <box flexDirection="row" justifyContent="space-between">
+        <text attributes={TextAttributes.BOLD} fg={theme.text}>{props.title}</text>
+        <text fg={theme.textMuted} onMouseUp={confirm}>esc</text>
+      </box>
+      <box paddingBottom={1}>
+        <text fg={theme.textMuted}>{props.message}</text>
+      </box>
+      <box flexDirection="row" justifyContent="flex-end" paddingBottom={1}>
+        <box paddingLeft={3} paddingRight={3} backgroundColor={theme.primary} onMouseUp={confirm}>
+          <text fg={theme.selectedListItemText}>ok</text>
+        </box>
+      </box>
+    </box>
+  )
+}
+
+export interface HelpDialogProps {
+  commandShortcut?: string
+  onClose: () => void
+}
+
+export function HelpDialog(props: HelpDialogProps) {
+  useKeyboard((event) => {
+    if (isKey(event, "return", "enter", "escape", "esc")) {
+      event.preventDefault()
+      event.stopPropagation()
+      props.onClose()
+    }
+  })
+
+  return (
+    <box paddingLeft={2} paddingRight={2} gap={1}>
+      <box flexDirection="row" justifyContent="space-between">
+        <text attributes={TextAttributes.BOLD} fg={theme.text}>Help</text>
+        <text fg={theme.textMuted} onMouseUp={props.onClose}>esc/enter</text>
+      </box>
+      <box paddingBottom={1}>
+        <text fg={theme.text}>
+          Press <span style={{ fg: theme.textMuted }}>{props.commandShortcut ?? "ctrl+p"}</span> to see all available actions and commands in any context.
+        </text>
+      </box>
+      <box flexDirection="row" justifyContent="flex-end" paddingBottom={1}>
+        <box paddingLeft={3} paddingRight={3} backgroundColor={theme.primary} onMouseUp={props.onClose}>
+          <text fg={theme.selectedListItemText}>ok</text>
+        </box>
+      </box>
+    </box>
+  )
+}
+
+export interface ExportOptionsDialogProps {
+  value?: string
+  options?: { thinking?: boolean; toolDetails?: boolean; assistantMetadata?: boolean; openWithoutSaving?: boolean }
+  onConfirm: (value: string, options: NonNullable<ExportOptionsDialogProps["options"]>) => void
+  onClose: () => void
+}
+
+export function ExportOptionsDialog(props: ExportOptionsDialogProps) {
+  const [filename, setFilename] = createSignal(props.value ?? "")
+  const [thinking, setThinking] = createSignal(props.options?.thinking ?? false)
+  const [toolDetails, setToolDetails] = createSignal(props.options?.toolDetails ?? true)
+  const [assistantMetadata, setAssistantMetadata] = createSignal(props.options?.assistantMetadata ?? true)
+  const [openWithoutSaving, setOpenWithoutSaving] = createSignal(props.options?.openWithoutSaving ?? false)
+  const [active, setActive] = createSignal<"filename" | "thinking" | "toolDetails" | "assistantMetadata" | "openWithoutSaving">("filename")
+  let textarea: TextareaRenderable | undefined
+
+  function toggle() {
+    if (active() === "thinking") setThinking((value) => !value)
+    else if (active() === "toolDetails") setToolDetails((value) => !value)
+    else if (active() === "assistantMetadata") setAssistantMetadata((value) => !value)
+    else if (active() === "openWithoutSaving") setOpenWithoutSaving((value) => !value)
+  }
+
+  useKeyboard((event) => {
+    if (isKey(event, "tab")) {
+      event.preventDefault()
+      event.stopPropagation()
+      const order = ["filename", "thinking", "toolDetails", "assistantMetadata", "openWithoutSaving"] as const
+      setActive((value) => order[(order.indexOf(value) + 1) % order.length]!)
+      return
+    }
+    if (isKey(event, "space")) {
+      if (active() !== "filename") {
+        event.preventDefault()
+        event.stopPropagation()
+        toggle()
+      }
+      return
+    }
+    if (isKey(event, "escape", "esc")) {
+      event.preventDefault()
+      event.stopPropagation()
+      props.onClose()
+      return
+    }
+    if (isKey(event, "return", "enter")) {
+      event.preventDefault()
+      event.stopPropagation()
+      props.onConfirm(filename().trim() || "session-export.md", { thinking: thinking(), toolDetails: toolDetails(), assistantMetadata: assistantMetadata(), openWithoutSaving: openWithoutSaving() })
+    }
+  })
+
+  return (
+    <box paddingLeft={2} paddingRight={2} gap={1}>
+      <box flexDirection="row" justifyContent="space-between">
+        <text attributes={TextAttributes.BOLD} fg={theme.text}>Export Options</text>
+        <text fg={theme.textMuted} onMouseUp={props.onClose}>esc</text>
+      </box>
+      <box flexDirection="row" gap={1} alignItems="center">
+        <text fg={theme.text}>Filename:</text>
+        <textarea
+          height={3}
+          ref={(value: TextareaRenderable) => { textarea = value }}
+          initialValue={filename()}
+          placeholder="Enter filename"
+          placeholderColor={theme.textMuted}
+          textColor={theme.text}
+          focusedTextColor={theme.text}
+          backgroundColor={theme.backgroundElement}
+          focusedBackgroundColor={theme.backgroundElement}
+          cursorColor={theme.text}
+          onContentChange={() => { if (textarea && !textarea.isDestroyed) setFilename(textarea.plainText) }}
+        />
+      </box>
+      <For each={[
+        { key: "thinking" as const, label: "Include thinking", value: thinking },
+        { key: "toolDetails" as const, label: "Include tool details", value: toolDetails },
+        { key: "assistantMetadata" as const, label: "Include assistant metadata", value: assistantMetadata },
+        { key: "openWithoutSaving" as const, label: "Open without saving", value: openWithoutSaving },
+      ]}>
+        {(item) => (
+          <box
+            flexDirection="row"
+            gap={1}
+            backgroundColor={active() === item.key ? theme.backgroundElement : undefined}
+            onMouseUp={() => { setActive(item.key); toggle() }}
+          >
+            <text fg={active() === item.key ? theme.primary : theme.textMuted}>[{item.value() ? "x" : " "}]</text>
+            <text fg={active() === item.key ? theme.primary : theme.text}>{item.label}</text>
+          </box>
+        )}
+      </For>
+      <box flexDirection="row" gap={2} paddingBottom={1}>
+        <text fg={theme.text}>
+          space <span style={{ fg: theme.textMuted }}>toggle</span>
+        </text>
+        <text fg={theme.text}>
+          tab <span style={{ fg: theme.textMuted }}>options</span>
+        </text>
+        <text fg={theme.text}>
+          return <span style={{ fg: theme.textMuted }}>confirm</span>
+        </text>
+      </box>
+    </box>
+  )
+}
+
+export interface StashDialogProps {
+  entries: { id: string; text: string; created: number }[]
+  onSelect: (entry: { id: string; text: string; created: number }) => void
+  onDelete: (id: string) => void
+  onClose: () => void
+}
+
+export function StashDialog(props: StashDialogProps) {
+  const [pendingDelete, setPendingDelete] = createSignal<string>()
+  const preview = (text: string) => (text.split("\n")[0] || "").trim().slice(0, 50) || "(empty)"
+  const relative = (time: number) => {
+    const seconds = Math.round((Date.now() - time) / 1000)
+    if (seconds < 60) return "just now"
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`
+    if (seconds < 86_400) return `${Math.round(seconds / 3600)}h ago`
+    return new Date(time).toLocaleDateString()
+  }
+  return (
+    <SelectDialog
+      title="Stash"
+      options={[...props.entries].reverse().map((entry) => ({
+        value: entry.id,
+        title: pendingDelete() === entry.id ? "Press ctrl+d again to confirm" : preview(entry.text),
+        description: relative(entry.created),
+        footer: entry.text.split("\n").length > 1 ? `~${entry.text.split("\n").length} lines` : undefined,
+      }))}
+      preserveSelection
+      onMove={(value) => setPendingDelete((current) => current === value ? current : undefined)}
+      onSelect={(value) => {
+        const entry = props.entries.find((item) => item.id === value)
+        if (entry) props.onSelect(entry)
+        props.onClose()
+      }}
+      actions={[{
+        key: "ctrl+d",
+        title: "delete",
+        onTrigger: (value) => {
+          if (pendingDelete() === value) { props.onDelete(value); props.onClose() }
+          else setPendingDelete(value)
+        },
+      }]}
+      onClose={props.onClose}
+    />
   )
 }

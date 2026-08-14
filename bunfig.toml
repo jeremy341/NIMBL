@@ -1,3 +1,5 @@
-[run]
-preload = ["@opentui/solid/preload"]
-conditions = ["browser"]
+# The OpenTUI Solid transform is applied explicitly by build.ts.  Do not
+# preload the development transform when running the bundled dist/nimbl.js:
+# the preload scans the Windows home path and can emit an EPERM warning before
+# the application starts.  Keeping runtime configuration empty also makes the
+# published bundle deterministic.

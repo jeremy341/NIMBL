@@ -168,6 +168,33 @@ export class DependencyGraph {
     for (const file of this.sources.keys()) this.recomputeEdges(file)
   }
 
+  /**
+   * Build the dependency graph cooperatively, yielding to the event loop every
+   * `yieldEvery` files so long first-time builds never block the UI spinner or
+   * input. Produces the same graph as `new DependencyGraph(sources)`.
+   */
+  static async buildCooperative(
+    sources: FileSource[],
+    yieldFn: () => Promise<void>,
+    yieldEvery = 16,
+  ): Promise<DependencyGraph> {
+    const graph = new DependencyGraph([])
+    let processed = 0
+    for (const source of sources) {
+      graph.sources.set(source.path, source)
+      graph.fileset = new Set(graph.sources.keys())
+      graph.parsed.set(source.path, parseFile(source) ?? { path: source.path, symbols: [], imports: [], exports: [], refs: [], calls: [], inherits: [], isTest: false })
+      if (++processed % yieldEvery === 0) await yieldFn()
+    }
+    graph.reindexSymbols()
+    processed = 0
+    for (const file of graph.sources.keys()) {
+      graph.recomputeEdges(file)
+      if (++processed % yieldEvery === 0) await yieldFn()
+    }
+    return graph
+  }
+
   private reindexSymbols() {
     const byName = new Map<string, GraphSymbol[]>()
     for (const file of this.parsed.values()) {
@@ -348,4 +375,12 @@ export class DependencyGraph {
 
 export function buildDependencyGraph(sources: FileSource[]): DependencyGraph {
   return new DependencyGraph(sources)
+}
+
+export async function buildDependencyGraphCooperative(
+  sources: FileSource[],
+  yieldFn: () => Promise<void>,
+  yieldEvery = 16,
+): Promise<DependencyGraph> {
+  return DependencyGraph.buildCooperative(sources, yieldFn, yieldEvery)
 }

@@ -13,6 +13,8 @@ export type AssistantPart =
       output?: string
       diff?: string
       path?: string
+      started?: number
+      ended?: number
     }
 
 export interface ChatMessage {
@@ -41,6 +43,8 @@ export interface ChatSession {
   contextTokens?: number
   contextWindow?: number
   snapshots?: Array<{ path: string; before: string; after: string; time: number }>
+  parentID?: string
+  runState?: "idle" | "running" | "failed" | "interrupted" | "queued"
 }
 
 export interface CommandOption {
@@ -50,6 +54,7 @@ export interface CommandOption {
   category?: string
   current?: boolean
   connected?: boolean
+  disabled?: boolean
   footer?: string
   details?: string[]
   gutter?: string

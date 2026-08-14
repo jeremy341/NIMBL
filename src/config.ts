@@ -1,4 +1,4 @@
-import { defaultModelFor, getProvider, localFallbackKey, providerApiKey } from "@/core/providers"
+import { PROVIDERS, defaultModelFor, localFallbackKey, providerApiKey } from "@/core/providers"
 import { loadGlobalConfig, type GlobalConfig } from "@/core/global-config"
 
 export interface ResolvedConfig {
@@ -12,17 +12,21 @@ export function resolveConfig(argv: string[], globalConfig: GlobalConfig = loadG
   const argModel = getFlag(argv, "--model")
   const argApiKey = getFlag(argv, "--api-key")
 
-  const provider = argProvider || process.env.NIMBL_PROVIDER || globalConfig.provider || "freellmapi"
-  const definition = getProvider(provider)
-  const model = argModel || process.env.NIMBL_MODEL || (!argProvider && !process.env.NIMBL_PROVIDER ? globalConfig.model : undefined) || defaultModelFor(provider)
-  const apiKey = argApiKey || providerApiKey(provider) || globalConfig.providerKeys?.[provider] || localFallbackKey(provider)
-
-  if (!apiKey) {
-    throw new Error(
-      `No API key found for provider "${provider}". ` +
-      `Set ${definition.envKey}, connect the provider in NIMBL, or pass --api-key.`
-    )
-  }
+  const explicitProvider = argProvider || process.env.NIMBL_PROVIDER
+  const savedProvider = globalConfig.provider && PROVIDERS.some((item) => item.id === globalConfig.provider)
+    ? globalConfig.provider
+    : undefined
+  const provider = explicitProvider || savedProvider || "freellmapi"
+  const definition = PROVIDERS.find((item) => item.id === provider)
+  if (!definition) throw new Error(`Unknown provider "${provider}". Use /provider to inspect supported providers.`)
+  const savedModel = !explicitProvider && globalConfig.model && definition.models.some((item) => item.id === globalConfig.model)
+    ? globalConfig.model
+    : undefined
+  const model = argModel || process.env.NIMBL_MODEL || savedModel || defaultModelFor(provider)
+  // Credential collection belongs to the interactive provider flow. Keeping an
+  // empty key here lets the TUI start and show the same provider -> API key ->
+  // model sequence as OpenCode instead of failing before the first frame.
+  const apiKey = argApiKey || providerApiKey(provider) || globalConfig.providerKeys?.[provider] || localFallbackKey(provider) || ""
 
   return {
     provider,

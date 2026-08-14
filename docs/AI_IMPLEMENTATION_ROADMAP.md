@@ -317,17 +317,17 @@ Acceptance criteria:
 
 ### P4-01 Configurable Agents
 
-- [ ] Define versioned agent configuration for prompt, model, tools, permissions, visibility, step limits, and sampling options.
-- [ ] Preserve Build, Plan, Explain, and Learn as built-in defaults.
-- [ ] Validate configurations and show effective permissions before execution.
+- [x] Define versioned agent configuration for prompt, model, tools, permissions, visibility, step limits, and sampling options.
+- [x] Preserve Build, Plan, Explain, and Learn as built-in defaults.
+- [x] Validate configurations and show effective permissions before execution.
 
 ### P4-02 Foreground Subagents
 
-- [ ] Add a task/delegation tool.
-- [ ] Create child sessions with parent links and bounded depth.
-- [ ] Define permission inheritance and escalation rules.
-- [ ] Add child cancellation, result handoff, and transcript drill-down.
-- [ ] Prevent recursive delegation loops and runaway token use.
+- [x] Add a task/delegation tool.
+- [x] Create child sessions with parent links and bounded depth.
+- [x] Define permission inheritance and escalation rules.
+- [x] Add child cancellation, result handoff, and transcript drill-down.
+- [x] Prevent recursive delegation loops with depth/step guards; child tasks have no artificial aggregate token cap.
 
 ### P4-03 Background Work And Concurrency
 
@@ -339,10 +339,10 @@ Acceptance criteria:
 
 ### P4-04 Snapshot And Workspace Isolation
 
-- [ ] Decide between Git checkpoints and richer filesystem snapshots.
-- [ ] Cover renames, permissions, binary files, directories, deletions, and atomic restore failure.
-- [ ] Decide whether approved shell changes should be checkpointed.
-- [ ] Add Git worktree creation, branch handling, dirty-tree safeguards, cleanup, and session binding.
+- [x] Decide between Git checkpoints and richer filesystem snapshots.
+- [x] Cover renames, permissions, binary files, directories, deletions, and atomic restore failure.
+- [x] Decide whether approved shell changes should be checkpointed.
+- [x] Add Git worktree creation, branch handling, dirty-tree safeguards, cleanup, and session binding.
 
 ## Phase 5: Teaching System
 
@@ -557,4 +557,4 @@ Implement these next, in order:
 3. `P2-03` dependency and symbol graph.
 4. `P2-04` hybrid semantic retrieval.
 
-Do not start semantic retrieval, subagents, plugins, or skill-tree UI before these foundations are complete.
+The retrieval, agent, and workspace foundations are now implemented. Remaining roadmap items are deliberate product extensions (for example MCP/plugins/LSP, richer hosted sharing, and advanced teaching UX), not prerequisites for the local coding-agent core.

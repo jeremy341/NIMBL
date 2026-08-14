@@ -26,6 +26,8 @@ bun install
 bun run nimbl
 ```
 
+No API key is required to open NIMBL. In the TUI, run `/provider`, choose a hosted provider, paste its key, and then choose one of that provider's models. NIMBL validates the credential through model discovery before saving it. Reopen `/provider` to reconnect or disconnect a saved credential.
+
 ### Set API Keys
 
 ```bash
@@ -45,8 +47,10 @@ Get free API keys from:
 ### Launch
 
 ```bash
-nimbl
+bun run nimbl
 ```
+
+For a source checkout that should expose the `nimbl` command globally, run `bun link` once and then launch `nimbl` from any project directory.
 
 Or with custom provider/model:
 
@@ -56,12 +60,27 @@ nimbl --provider openrouter --model deepseek/deepseek-chat
 
 ### Usage
 
-Launch `nimbl`, choose a provider and model, then use the OpenTUI prompt. Tab cycles Build, Plan, Explain, and Learn modes. Slash autocomplete exposes the active command set.
+Launch `nimbl`, choose a provider and model, then use the OpenTUI prompt. Tab cycles Build, Plan, Explain, and Learn modes. Slash autocomplete exposes the active command set. `@file` and `!`command`` references expand before the model sees the prompt; `@build`, `@plan`, `@explain`, and `@learn` delegate the prompt to a child session running that agent mode.
 
 **Commands:**
 
-- `/quit` or `/exit` — Exit NIMBL
-- `Ctrl+C` — Exit NIMBL
+- `/provider`, `/model` — Authenticate a provider, discover its models, and select one
+- `/subagents` — Inspect, open, navigate, or cancel delegated child sessions
+- `/diff` — Open tracked changes in the native unified/split diff viewer
+- Click a user message — Copy, fork, resend, inspect changes, or safely revert that turn
+- `/workspace` or `/worktrees` — Create, inspect, remove, and prune Git worktrees
+- `/share`, `/unshare` — Create or remove a hosted redacted session link
+- `/editor` — Open the current draft in `$VISUAL`, `$EDITOR`, or `settings.prompt.editor`
+- `/quit` or `/exit` — Exit NIMBL (`Ctrl+C` twice also exits)
+
+While a run is active, a submitted prompt is queued (or replaces the queue, per `settings.prompt.queue`) and runs after the current turn instead of being dropped. Ctrl+Up / Ctrl+Down navigate your previous prompt submissions.
+
+Headless use:
+
+```bash
+nimbl run "explain this codebase" --provider openrouter --agent plan
+nimbl --print "summarize README.md"
+```
 
 ## Architecture
 
@@ -120,7 +139,7 @@ bun run typecheck
 
 NIMBL persists provider-reported usage per assistant request, including cache and reasoning details when available. It shows GPT-4o reference cost separately from estimated provider cost; provider cost is available only for models with dated catalog pricing.
 
-Request budgeting uses exact OpenAI-family tokenizers and clearly labeled conservative estimates for other model families. It budgets system instructions, tools, history, summaries, attachments, project instructions, retrieval, output, protocol overhead, and safety margin, then automatically archives older turns into a structured summary near model limits. Context retrieval uses an ignore-aware lexical index and parser-backed structural chunks for TypeScript, JavaScript, and JSON, with lexical fallback for other files. Semantic retrieval, dependency graphs, universal AST compression, provider prompt caching, and reproducible comparative benchmarks remain planned work.
+Request budgeting uses exact OpenAI-family tokenizers and clearly labeled conservative estimates for other model families. It budgets system instructions, tools, history, summaries, attachments, project instructions, retrieval, output, protocol overhead, and safety margin, then automatically archives older turns into a structured summary near model limits. Context retrieval uses an ignore-aware lexical index, parser-backed structural chunks, dependency graphs, local/hosted semantic fusion, and model-aware token compression. Provider prompt caching, cache accounting, and reproducible retrieval ablations are implemented; comparative quality claims remain gated on benchmark results.
 
 ## Roadmap
 
@@ -138,6 +157,7 @@ OPENROUTER_KEY=          # OpenRouter API key
 # Optional Runtime Configuration
 NIMBL_PROVIDER=openrouter  # Default: freellmapi
 NIMBL_MODEL=               # Model override
+NIMBL_SHARE_URL=           # Optional compatible hosted-sharing service base URL
 ```
 
 ## Providers
@@ -152,11 +172,11 @@ Entering a key through the provider dialog saves it for future NIMBL runs, inclu
 
 ## Security Boundary
 
-NIMBL file tools are confined to canonical project paths and block environment files, repository internals, NIMBL state, common credential files, and private-key formats. Project skills are the narrow exception: the skill tool may read only the canonical `.nimbl/skills/<name>/SKILL.md` file it resolves.
+NIMBL file tools are confined to canonical project paths and block environment files, repository internals, NIMBL state, common credential files, and private-key formats. Project skills are the narrow exception: the skill tool may read only the canonical `.nimbl/skills/<name>/SKILL.md` file it resolves, plus global skills in the OS config `nimbl/skills/` directory and any `skills.paths` directories.
 
 Approved shell commands are not sandboxed. They run with the current user's permissions and can access files, processes, and networks outside the project. Review shell approvals as carefully as commands entered directly in a terminal.
 
-Session data is project-local and stored in plaintext under `.nimbl/`. It can include prompts, reasoning, tool output, attachment expansions, request usage, and approved file snapshots. Use `/delete`, `/clear`, and `/export` deliberately, and do not put secrets into prompts or approved command output.
+Session data is project-local and stored in plaintext under `.nimbl/`. It can include prompts, reasoning, tool output, attachment expansions, request usage, approved file snapshots, parent/child session links, and hosted-share deletion tokens. `/share` sends a redacted transcript only to the explicitly configured `NIMBL_SHARE_URL`; NIMBL has no implicit sharing endpoint. Use `/unshare`, `/delete`, `/clear`, and `/export` deliberately, and do not put secrets into prompts or approved command output.
 
 Saved provider keys are also plaintext. Protect the operating-system account that owns the global NIMBL config file and remove its `providerKeys` entries if a credential is revoked.
 

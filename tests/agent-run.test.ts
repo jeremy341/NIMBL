@@ -63,7 +63,7 @@ describe("agent execution", () => {
       responseId: "response",
       requestId: "request",
       usage: { totalTokens: 6, cacheReadTokens: 3, textTokens: 1, reasoningTokens: 1 },
-      budget: { fits: true, inputTotal: expect.any(Number), quality: "character-estimate" },
+      budget: { fits: true, inputTotal: expect.any(Number), quality: "family-estimate" },
     })
   })
 

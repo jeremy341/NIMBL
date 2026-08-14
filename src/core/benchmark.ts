@@ -42,12 +42,16 @@ export interface BenchmarkMetadata {
   cacheState: string
 }
 
-export type RetrievalMode = "lexical" | "graph" | "hybrid"
+export type RetrievalMode = "none" | "lexical" | "structural" | "graph" | "semantic" | "hybrid" | "prompt-cache"
 
 const MODE_OPTIONS: Record<RetrievalMode, { hybrid?: boolean; graph?: boolean }> = {
+  none: { graph: false },
   lexical: { graph: false },
+  structural: { graph: false },
   graph: { graph: true },
+  semantic: { hybrid: true, graph: false },
   hybrid: { hybrid: true, graph: true },
+  "prompt-cache": { hybrid: true, graph: true },
 }
 
 export function mulberry32(seed: number) {
@@ -141,7 +145,7 @@ export async function runRetrievalBenchmark(options: {
         const runSeed = benchmarkRunSeed(seed + sample, task.id)
         for (const mode of modes) {
           const started = Date.now()
-          const selection = await indexByMode.get(mode)!.select(task.query, task.limit ?? options.limit ?? 8, task.budgetChars ?? options.budgetChars ?? 30_000)
+          const selection = mode === "none" ? { items: [], estimatedTokens: 0, telemetry: { mode: "none", rationale: ["retrieval disabled"] } } : await indexByMode.get(mode)!.select(task.query, task.limit ?? options.limit ?? 8, task.budgetChars ?? options.budgetChars ?? 30_000)
           runs.push({
             taskId: task.id,
             mode,
@@ -160,6 +164,22 @@ export async function runRetrievalBenchmark(options: {
     for (const index of indexByMode.values()) index.close()
   }
   return runs
+}
+
+export interface AblationSummary { mode: string; quality: number; precisionAtK: number; recallAtK: number; mrr: number; estimatedTokens: number; latencyMs: number; qualityRegression: boolean; claim: "eligible" | "ineligible" }
+
+/** Runs every retrieval configuration and only marks token savings as eligible when quality does not regress. */
+export async function runRetrievalAblations(options: Omit<Parameters<typeof runRetrievalBenchmark>[0], "modes"> & { modes?: RetrievalMode[] }): Promise<AblationSummary[]> {
+  const runs = await runRetrievalBenchmark({ ...options, modes: options.modes || ["none", "lexical", "structural", "graph", "semantic", "hybrid", "prompt-cache"] })
+  const summary = summarizeBenchmarkRuns(runs); const baseline = summary.lexical?.mrr.mean ?? 0
+  return Object.entries(summary).map(([mode, values]) => { const quality = (values.precisionAtK.mean + values.recallAtK.mean + values.mrr.mean) / 3; const qualityRegression = values.mrr.mean + 0.0001 < baseline; return { mode, quality, precisionAtK: values.precisionAtK.mean, recallAtK: values.recallAtK.mean, mrr: values.mrr.mean, estimatedTokens: values.estimatedTokens.mean, latencyMs: values.latencyMs.mean, qualityRegression, claim: qualityRegression ? "ineligible" : "eligible" } })
+}
+
+export function defensibleClaims(results: AblationSummary[]) {
+  const lexical = results.find((item) => item.mode === "lexical"); const claims: { mode: string; tokenReduction: number; quality: number; eligible: boolean; reason: string }[] = []
+  if (!lexical) return claims
+  for (const result of results) claims.push({ mode: result.mode, tokenReduction: lexical.estimatedTokens ? 1 - result.estimatedTokens / lexical.estimatedTokens : 0, quality: result.quality, eligible: result.claim === "eligible" && result.quality >= lexical.quality, reason: result.qualityRegression ? "quality regressed against lexical baseline" : "quality meets or exceeds lexical baseline" })
+  return claims
 }
 
 export function appendBenchmarkRecords(file: string, records: RetrievalRun[] | RetrievalRun) {

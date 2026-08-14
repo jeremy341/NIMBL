@@ -17,6 +17,8 @@ export interface PriceVersion {
   source: { url: string; checkedAt: string }
 }
 
+export type ModelStatus = "alpha" | "beta" | "deprecated" | "active"
+
 export interface ProviderModel {
   id: string
   name: string
@@ -26,6 +28,7 @@ export interface ProviderModel {
   tokenizer: TokenizerFamily
   capabilities: ModelCapabilities
   pricing?: readonly PriceVersion[]
+  status?: ModelStatus
 }
 
 export interface ProviderDefinition {
@@ -33,6 +36,8 @@ export interface ProviderDefinition {
   name: string
   description: string
   envKey: string
+  /** Secondary env var used for backward compatibility (e.g. OPENCODE_ZEN_API_KEY). */
+  fallbackEnvKey?: string
   baseURL: string
   protocol: ProviderProtocol
   models: ProviderModel[]
@@ -51,7 +56,7 @@ function tokenizerFamily(id: string): TokenizerFamily {
   if (/gpt-3\.5|gpt-4(?!\.1|o)/.test(value)) return "openai:cl100k_base"
   if (value.includes("claude")) return "anthropic"
   if (value.includes("gemini")) return "gemini"
-  if (/llama|nemotron|qwen/.test(value)) return "llama"
+  if (/llama|nemotron|qwen|deepseek|glm|kimi|grok|minimax/.test(value)) return "llama"
   if (/mistral|codestral|mixtral/.test(value)) return "mistral"
   return "unknown"
 }
@@ -87,15 +92,50 @@ function compatible(
   envKey: string,
   baseURL: string,
   models: ModelInput[],
-  options: Partial<Pick<ProviderDefinition, "headers" | "local" | "health" | "discovery">> = {},
+  options: Partial<Pick<ProviderDefinition, "headers" | "local" | "health" | "discovery" | "fallbackEnvKey">> = {},
 ): ProviderDefinition {
   return { id, name, description, envKey, baseURL, models: models.map((model) => defineModel(id, model)), protocol: "openai-compatible", health: options.health ?? { path: "/models", timeoutMs: 3000 }, discovery: options.discovery ?? { path: "/models" }, ...options }
 }
 
 export const PROVIDERS: ProviderDefinition[] = [
   compatible("freellmapi", "FreeLLM API", "Local auto-router", "FREELLMAPI_KEY", "http://localhost:3001/v1", [{ id: "auto", name: "Auto-router", contextWindow: 128_000 }], { local: true }),
-  compatible("opencode-zen", "OpenCode Zen", "OpenCode-tested coding models", "OPENCODE_ZEN_API_KEY", "https://opencode.ai/zen/v1", [{ id: "deepseek-v4-flash-free", name: "DeepSeek V4 Flash Free", free: true, contextWindow: 128_000 }, { id: "nemotron-3-ultra-free", name: "Nemotron 3 Ultra Free", free: true, contextWindow: 128_000 }, { id: "minimax-m2.5", name: "MiniMax M2.5", contextWindow: 128_000 }]),
-  compatible("opencode-go", "OpenCode Go", "OpenCode Go subscription", "OPENCODE_GO_API_KEY", "https://opencode.ai/zen/v1", [{ id: "minimax-m2.5", name: "MiniMax M2.5", contextWindow: 128_000 }, { id: "glm-5.1", name: "GLM 5.1", contextWindow: 128_000 }, { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", contextWindow: 128_000 }]),
+  compatible("opencode-zen", "OpenCode Zen", "OpenCode-tested coding models", "OPENCODE_API_KEY", "https://opencode.ai/zen/v1", [
+    { id: "deepseek-v4-flash-free", name: "DeepSeek V4 Flash Free", free: true, contextWindow: 200_000 },
+    { id: "nemotron-3-ultra-free", name: "Nemotron 3 Ultra Free", free: true, contextWindow: 1_000_000 },
+    { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", contextWindow: 1_000_000 },
+    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", contextWindow: 1_000_000 },
+    { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", contextWindow: 1_000_000 },
+    { id: "claude-opus-4-5", name: "Claude Opus 4.5", contextWindow: 200_000 },
+    { id: "gpt-5", name: "GPT-5", contextWindow: 400_000 },
+    { id: "gemini-3-flash", name: "Gemini 3 Flash", contextWindow: 1_048_576 },
+    { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash", contextWindow: 1_048_576 },
+    { id: "kimi-k3", name: "Kimi K3", contextWindow: 1_048_576 },
+    { id: "grok-4.6", name: "Grok 4.6", contextWindow: 500_000 },
+    { id: "glm-5.2", name: "GLM-5.2", contextWindow: 1_000_000 },
+    { id: "glm-5.1", name: "GLM-5.1", contextWindow: 204_800 },
+    { id: "minimax-m2.5", name: "MiniMax-M2.5", contextWindow: 204_800 },
+  ], { fallbackEnvKey: "OPENCODE_ZEN_API_KEY" }),
+  compatible("opencode-go", "OpenCode Go", "OpenCode Go subscription", "OPENCODE_API_KEY", "https://opencode.ai/zen/go/v1", [
+    { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", contextWindow: 1_000_000 },
+    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", contextWindow: 1_000_000 },
+    { id: "kimi-k2.7-code", name: "Kimi K2.7 Code", contextWindow: 262_144 },
+    { id: "kimi-k3", name: "Kimi K3", contextWindow: 1_048_576 },
+    { id: "glm-5.3", name: "GLM-5.3", contextWindow: 1_000_000 },
+    { id: "glm-5.2", name: "GLM-5.2", contextWindow: 1_000_000 },
+    { id: "glm-5.1", name: "GLM-5.1", contextWindow: 202_752 },
+    { id: "grok-4.5", name: "Grok 4.5", contextWindow: 500_000 },
+    { id: "minimax-m3", name: "MiniMax-M3", contextWindow: 1_000_000 },
+    { id: "minimax-m2.7", name: "MiniMax-M2.7", contextWindow: 204_800 },
+    { id: "minimax-m2.5", name: "MiniMax-M2.5", contextWindow: 204_800, status: "deprecated" },
+    { id: "qwen3.8-max", name: "Qwen3.8 Max", contextWindow: 1_000_000 },
+    { id: "qwen3.7-plus", name: "Qwen3.7 Plus", contextWindow: 1_000_000 },
+    { id: "qwen3.6-plus", name: "Qwen3.6 Plus", contextWindow: 1_000_000 },
+    { id: "mimo-v2.5", name: "MIMO-V2.5", contextWindow: 1_000_000 },
+    { id: "mimo-v2.5-pro", name: "MIMO-V2.5 Pro", contextWindow: 1_048_576 },
+    { id: "hy3", name: "HY3", contextWindow: 256_000 },
+    { id: "kimi-k2.6", name: "Kimi K2.6", contextWindow: 262_144 },
+    { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", contextWindow: 1_050_000 },
+  ], { fallbackEnvKey: "OPENCODE_GO_API_KEY" }),
   compatible("openai", "OpenAI", "OpenAI API", "OPENAI_API_KEY", "https://api.openai.com/v1", [{ id: "gpt-4.1-mini", name: "GPT-4.1 mini", contextWindow: 1_047_576 }, { id: "gpt-4.1", name: "GPT-4.1", contextWindow: 1_047_576 }]),
   { id: "anthropic", name: "Anthropic", description: "Claude API", envKey: "ANTHROPIC_API_KEY", baseURL: "https://api.anthropic.com/v1", protocol: "anthropic", models: [defineModel("anthropic", { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", contextWindow: 200_000 }), defineModel("anthropic", { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", contextWindow: 200_000 })], health: { path: "/models", timeoutMs: 3000 }, discovery: { path: "/models" } },
   compatible("github-models", "GitHub Models", "GitHub PAT with models scope", "GITHUB_TOKEN", "https://models.github.ai/inference", [{ id: "openai/gpt-4.1", name: "OpenAI GPT-4.1", contextWindow: 1_047_576 }, { id: "deepseek/DeepSeek-V3-0324", name: "DeepSeek V3", contextWindow: 64_000 }], { headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10" } }),
@@ -121,7 +161,9 @@ export function getProvider(id: string): ProviderDefinition {
 }
 
 export function defaultModelFor(providerID: string): string {
-  return getProvider(providerID).models[0]!.id
+  const provider = getProvider(providerID)
+  const active = provider.models.find((model) => model.status !== "deprecated")
+  return (active ?? provider.models[0])!.id
 }
 
 export function getModel(providerID: string, modelID: string) {
@@ -167,7 +209,7 @@ export function compatibilityIssues(model: ProviderModel, requirements: RequestR
 export function providerApiKey(providerID: string, override?: string): string {
   if (override) return override
   const provider = getProvider(providerID)
-  return process.env[provider.envKey] || ""
+  return process.env[provider.envKey] || (provider.fallbackEnvKey ? process.env[provider.fallbackEnvKey] : "") || ""
 }
 
 export function localFallbackKey(providerID: string): string {
@@ -177,4 +219,76 @@ export function localFallbackKey(providerID: string): string {
 export function modelContextWindow(providerID: string, modelID: string) {
   const override = Number(process.env.NIMBL_CONTEXT_WINDOW)
   return resolveModel(providerID, modelID, Number.isFinite(override) ? Math.floor(override) : undefined).contextWindow
+}
+
+type LiveModelEntry = Record<string, unknown>
+type LiveProviderEntry = Record<string, unknown>
+
+function toModelStatus(value: unknown): ModelStatus | undefined {
+  if (value === "alpha" || value === "beta" || value === "deprecated" || value === "active") return value
+  return undefined
+}
+
+function liveToModel(providerID: string, id: string, entry: LiveModelEntry): ProviderModel {
+  const cost = entry.cost as LiveModelEntry | undefined
+  const limit = entry.limit as LiveModelEntry | undefined
+  const modalities = entry.modalities as LiveModelEntry | undefined
+  const input = typeof cost?.input === "number" ? cost.input : undefined
+  const output = typeof cost?.output === "number" ? cost.output : undefined
+  const context = typeof limit?.context === "number" ? limit.context : undefined
+  const maxOutput = typeof limit?.output === "number" ? limit.output : undefined
+  const inputModalities = Array.isArray(modalities?.input) ? (modalities!.input as unknown[]).filter((x): x is string => typeof x === "string") : []
+  const lower = id.toLowerCase()
+  const model: ProviderModel = {
+    id,
+    name: typeof entry.name === "string" ? entry.name : id,
+    free: input === 0 && output === 0,
+    contextWindow: context ?? 128_000,
+    maxOutputTokens: maxOutput ?? Math.min(32_768, Math.floor((context ?? 128_000) / 4)),
+    tokenizer: tokenizerFamily(id),
+    capabilities: {
+      tools: entry.tool_call !== false,
+      reasoning: entry.reasoning === true || /claude|deepseek|grok|o[134]-/.test(lower),
+      imageInput: inputModalities.includes("image"),
+      streaming: true,
+      structuredOutput: providerID !== "perplexity",
+    },
+    status: toModelStatus(entry.status),
+    pricing: input !== undefined && output !== undefined
+      ? [{
+          effectiveFrom: new Date().toISOString().slice(0, 10),
+          currency: "USD" as const,
+          perMillionTokens: {
+            input,
+            output,
+            cacheRead: typeof cost?.cache_read === "number" ? cost.cache_read : undefined,
+            cacheWrite: typeof cost?.cache_write === "number" ? cost.cache_write : undefined,
+          },
+          source: { url: "https://models.dev/api.json", checkedAt: new Date().toISOString() },
+        }]
+      : undefined,
+  }
+  return model
+}
+
+/** Map a NIMBL provider id to the models.dev provider key. */
+export function modelsDevKey(providerID: string): string {
+  return providerID === "opencode-zen" ? "opencode" : providerID
+}
+
+/**
+ * Overlay live models.dev data onto the static catalog. Every provider whose
+ * key exists in `data` gets its `models` replaced with live entries (name,
+ * context window, output limit, cost, capabilities, status, free flag).
+ * Falls back to the static list for providers missing from the feed.
+ */
+export function applyLiveCatalog(data: Record<string, unknown>): void {
+  for (const provider of PROVIDERS) {
+    const key = modelsDevKey(provider.id)
+    const live = data[key] as LiveProviderEntry | undefined
+    const models = live?.models as Record<string, LiveModelEntry> | undefined
+    if (!models) continue
+    const next = Object.entries(models).map(([id, entry]) => liveToModel(provider.id, id, entry))
+    if (next.length) provider.models = next
+  }
 }

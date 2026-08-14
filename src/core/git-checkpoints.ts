@@ -1,0 +1,14 @@
+import { execFileSync } from "node:child_process"
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+
+export interface GitCheckpoint { id: string; sessionID?: string; label: string; created: number; head: string; patch: string; status: string }
+function git(root: string, args: string[]) { return execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim() }
+function checkpointDirectory(root: string) { return join(root, ".nimbl", "checkpoints") }
+export class GitCheckpointManager {
+  constructor(readonly root: string) {}
+  create(label: string, sessionID?: string) { const head = git(this.root, ["rev-parse", "HEAD"]); const status = git(this.root, ["status", "--porcelain"]); const patch = git(this.root, ["diff", "--binary", "HEAD"]); const checkpoint: GitCheckpoint = { id: `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`, sessionID, label: label.trim().slice(0, 120) || "NIMBL checkpoint", created: Date.now(), head, patch, status }; mkdirSync(checkpointDirectory(this.root), { recursive: true }); writeFileSync(join(checkpointDirectory(this.root), `${checkpoint.id}.json`), JSON.stringify(checkpoint, null, 2) + "\n", { encoding: "utf8", mode: 0o600 }); return checkpoint }
+  list(sessionID?: string) { const folder = checkpointDirectory(this.root); if (!existsSync(folder)) return []; const values = readdirSync(folder).filter((name) => name.endsWith(".json")).map((name) => { try { return JSON.parse(readFileSync(join(folder, name), "utf8")) as GitCheckpoint } catch { return undefined } }).filter((item): item is GitCheckpoint => Boolean(item)); return values.filter((item) => !sessionID || item.sessionID === sessionID).sort((a, b) => b.created - a.created) }
+  async restore(id: string, options: { force?: boolean } = {}) { const checkpoint = this.list().find((item) => item.id === id); if (!checkpoint) throw new Error(`Git checkpoint "${id}" was not found.`); const current = git(this.root, ["status", "--porcelain"]); if (current && !options.force) throw new Error("Refusing to restore a Git checkpoint over uncommitted changes without force."); git(this.root, ["restore", "--source=HEAD", "--staged", "--worktree", "."]); if (checkpoint.patch) { const child = Bun.spawn(["git", "apply", "--binary", "-"], { cwd: this.root, stdin: new Blob([checkpoint.patch]), stdout: "pipe", stderr: "pipe" }); const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]); if (code !== 0) throw new Error((stderr || stdout || "Checkpoint restore failed").trim()) } return checkpoint }
+  remove(id: string) { const file = join(checkpointDirectory(this.root), `${id}.json`); if (!existsSync(file)) return false; rmSync(file); return true }
+}

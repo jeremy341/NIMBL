@@ -12,6 +12,7 @@ const SUBMIT_KEY_BINDINGS = [
   { name: "kpenter", action: "submit" as const },
   { name: "return", shift: true, action: "newline" as const },
 ]
+const PROMPT_PLACEHOLDERS = ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"]
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
 
 function promptOffsetWidth(value: string) {
@@ -37,7 +38,11 @@ export interface SessionPromptProps {
   onSubmit(value: string): void
   onAbort(): void
   onCommand(value: string): void
+  onQuit?(): void
+  onHistory?(direction: "previous" | "next"): void
   commands: CommandOption[]
+  agents?: CommandOption[]
+  files?: string[]
   agent: AgentMode
   provider: string
   model: string
@@ -46,6 +51,8 @@ export interface SessionPromptProps {
   context?: string
   showCwd?: boolean
   disabled?: boolean
+  retry?: { message: string; attempt: number; next: number }
+  onRetryClick?: () => void
   ref?: (value: SessionPromptRef | undefined) => void
 }
 
@@ -81,28 +88,70 @@ export function SessionPrompt(props: SessionPromptProps) {
   const [dismissed, setDismissed] = createSignal<string>()
   const [currentValue, setCurrentValue] = createSignal(props.value)
   const [interruptArmed, setInterruptArmed] = createSignal(false)
+  const [retrySeconds, setRetrySeconds] = createSignal(0)
+  const [placeholderIndex, setPlaceholderIndex] = createSignal(Math.floor(Math.random() * PROMPT_PLACEHOLDERS.length))
   let textarea: TextareaRenderable | undefined
   let root: BoxRenderable | undefined
   let interruptTimer: ReturnType<typeof setTimeout> | undefined
+  let retryTimer: ReturnType<typeof setInterval> | undefined
+  let placeholderTimer: ReturnType<typeof setInterval> | undefined
   let pasteTypeID = 0
   const pastedBlocks = new Map<number, string>()
   let syncing = false
   const pasteStyleID = syntaxStyle.getStyleId("extmark.paste")!
+  const placeholderText = () => `Ask anything... "${PROMPT_PLACEHOLDERS[placeholderIndex() % PROMPT_PLACEHOLDERS.length]}"`
+  const retryText = () => {
+    const retry = props.retry
+    if (!retry) return ""
+    const message = retry.message.includes("exceeded your current quota") && retry.message.includes("gemini")
+      ? "gemini is way too hot right now"
+      : retry.message.length > 80 ? retry.message.slice(0, 80) + "..." : retry.message
+    const truncatedHint = retry.message.length > 120 ? " (click to expand)" : ""
+    const seconds = Math.max(0, retrySeconds())
+    const duration = seconds > 0 ? `${seconds}s` : ""
+    return `${message}${truncatedHint} [retrying ${duration ? `in ${duration} ` : ""}attempt #${retry.attempt}]`
+  }
+
+  createEffect(() => {
+    const retry = props.retry
+    if (retry) {
+      setRetrySeconds(Math.max(0, Math.round((retry.next - Date.now()) / 1000)))
+      if (retryTimer) clearInterval(retryTimer)
+      retryTimer = setInterval(() => setRetrySeconds(Math.max(0, Math.round((retry.next - Date.now()) / 1000))), 1000)
+      retryTimer.unref?.()
+      return
+    }
+    if (retryTimer) clearInterval(retryTimer)
+    retryTimer = undefined
+    setRetrySeconds(0)
+  })
+  onCleanup(() => { if (retryTimer) clearInterval(retryTimer) })
 
   const maxHeight = createMemo(() => Math.max(6, Math.floor(dimensions().height / 3)))
-  const slashQuery = createMemo(() => {
+  const autocompleteQuery = createMemo(() => {
     const value = currentValue()
-    if (!value.startsWith("/")) return undefined
-    const beforeWhitespace = value.match(/^\/(\S*)$/)
-    return beforeWhitespace?.[1]?.toLowerCase()
+    const slash = value.match(/^\/(\S*)$/)
+    if (slash) return { mode: "/" as const, query: slash[1]!.toLowerCase(), start: 0 }
+    const mention = value.match(/(?:^|\s)@([^\s]*)$/)
+    if (!mention) return undefined
+    return { mode: "@" as const, query: mention[1]!.toLowerCase(), start: value.lastIndexOf("@") }
   })
   const matches = createMemo(() => {
-    const query = slashQuery()
-    if (query === undefined) return []
-    return props.commands.filter((option) => commandMatches(option, query)).slice(0, 10)
+    const state = autocompleteQuery()
+    if (!state) return []
+    if (state.mode === "/") return props.commands.filter((option) => commandMatches(option, state.query)).slice(0, 10)
+    const agentMatches = (props.agents ?? [])
+      .filter((option) => option.value.toLowerCase().includes(state.query))
+      .slice(0, 5)
+      .map((option): CommandOption => ({ ...option, description: "agent" }))
+    const fileMatches = (props.files ?? [])
+      .filter((path) => path.toLowerCase().includes(state.query))
+      .slice(0, 8)
+      .map((path): CommandOption => ({ value: path, title: path, description: "file" }))
+    return [...agentMatches, ...fileMatches].slice(0, 10)
   })
   const autocompleteOpen = createMemo(
-    () => slashQuery() !== undefined && dismissed() !== currentValue() && matches().length > 0,
+    () => autocompleteQuery() !== undefined && dismissed() !== currentValue() && matches().length > 0,
   )
   const autocompleteHeight = createMemo(() => {
     dimensions()
@@ -206,6 +255,15 @@ export function SessionPrompt(props: SessionPromptProps) {
   function selectCommand(index = selected()) {
     const option = matches()[index]
     if (!option) return
+    const state = autocompleteQuery()
+    if (state?.mode === "@") {
+      const path = option.value.includes(" ") ? `"${option.value}"` : option.value
+      const value = currentValue().slice(0, state.start) + `@${path} `
+      setDismissed(value)
+      setValue(value)
+      queueMicrotask(() => textarea?.focus())
+      return
+    }
     const command = commandName(option.value)
     if (option.autocomplete !== "insert") {
       setDismissed(command)
@@ -223,6 +281,10 @@ export function SessionPrompt(props: SessionPromptProps) {
     if (props.disabled) return
     const value = expandPastedBlocks(textarea?.plainText ?? currentValue()).trim()
     if (!value) return
+    if (value === "exit" || value === "quit" || value === ":q") {
+      props.onQuit?.()
+      return
+    }
     if (value.startsWith("/")) props.onCommand(value)
     else props.onSubmit(value)
     pastedBlocks.clear()
@@ -305,6 +367,31 @@ export function SessionPrompt(props: SessionPromptProps) {
       return
     }
 
+    if (props.status === "idle" && props.onHistory && !autocompleteOpen()) {
+      if (event.ctrl && (key === "up" || key === "arrowup")) {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        props.onHistory("previous")
+        return
+      }
+      if (event.ctrl && (key === "down" || key === "arrowdown")) {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        props.onHistory("next")
+        return
+      }
+    }
+
+    if (props.status === "idle" && !props.disabled && !autocompleteOpen() && !currentValue().trim()) {
+      const name = String(event?.name ?? event?.key ?? "").toLowerCase()
+      if (event.ctrl && name === "j" && textarea) {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        textarea.insertText("\n")
+        return
+      }
+    }
+
     if (props.disabled) event.preventDefault?.()
     // Tab intentionally bubbles to the app-level agent-mode handler when autocomplete is closed.
   }
@@ -326,8 +413,11 @@ export function SessionPrompt(props: SessionPromptProps) {
       if (!textarea || textarea.isDestroyed || props.disabled) return
       textarea.focus()
     }, 1)
+    placeholderTimer = setInterval(() => setPlaceholderIndex((value) => value + 1), 10_000)
+    placeholderTimer.unref?.()
     onCleanup(() => {
       clearTimeout(timer)
+      if (placeholderTimer) clearInterval(placeholderTimer)
       if (interruptTimer) clearTimeout(interruptTimer)
       props.ref?.(undefined)
     })
@@ -370,10 +460,10 @@ export function SessionPrompt(props: SessionPromptProps) {
                       fg={active() ? theme.selectedListItemText : theme.text}
                       attributes={active() ? TextAttributes.BOLD : undefined}
                     >
-                      {commandName(option.value)}
+                      {autocompleteQuery()?.mode === "@" ? `@${option.value}` : commandName(option.value)}
                     </text>
                     <text fg={active() ? theme.selectedListItemText : theme.textMuted} wrapMode="none">
-                      {" " + option.title}
+                      {autocompleteQuery()?.mode === "@" ? "" : " " + option.title}
                       <Show when={option.description}>
                         <span style={{ fg: active() ? theme.selectedListItemText : theme.textMuted }}>
                           {" · " + option.description}
@@ -411,7 +501,7 @@ export function SessionPrompt(props: SessionPromptProps) {
           <textarea
             width="100%"
             initialValue={props.value}
-            placeholder="Ask anything..."
+            placeholder={placeholderText()}
             placeholderColor={theme.textMuted}
             textColor={props.disabled ? theme.textMuted : theme.text}
             focusedTextColor={props.disabled ? theme.textMuted : theme.text}
@@ -477,6 +567,9 @@ export function SessionPrompt(props: SessionPromptProps) {
               <box marginLeft={1} flexDirection="row" gap={1}>
                 <Spinner color={agentColor(props.agent)} />
               </box>
+              <Show when={props.retry}>
+                <text fg={theme.error} onMouseUp={props.onRetryClick} flexGrow={1}>{retryText()}</text>
+              </Show>
               <text fg={theme.text} onMouseUp={requestInterrupt}>
                 esc <span style={{ fg: theme.textMuted }}>{interruptArmed() ? "again to interrupt" : "interrupt"}</span>
               </text>
@@ -495,7 +588,7 @@ export function SessionPrompt(props: SessionPromptProps) {
               when={props.context}
               fallback={
                 <text fg={theme.text}>
-                  tab <span style={{ fg: theme.textMuted }}>agents</span>
+                  tab <span style={{ fg: theme.textMuted }}>modes</span>
                 </text>
               }
             >

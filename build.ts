@@ -23,3 +23,8 @@ const result = await build({
 
 console.log("Build result:", result.success ? "SUCCESS" : "FAILED")
 console.log("Build output:", result.outputs.map(f => f.path))
+
+if (!result.success) {
+  for (const log of result.logs) console.error(log)
+  process.exitCode = 1
+}

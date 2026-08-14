@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { compactSession, forkSession, recordSnapshot, recordSnapshotGroup, redoSnapshot, renameSession, shouldCompactSession, undoSnapshot } from "@/core/session-actions"
+import { compactSession, forkSession, recordSnapshot, recordSnapshotGroup, redoSnapshot, renameSession, revertToMessage, shouldCompactSession, snapshotUnifiedDiff, undoSnapshot } from "@/core/session-actions"
 import { getModel } from "@/core/providers"
 import type { SessionWithSnapshots } from "@/core/session-actions"
 
@@ -112,5 +112,30 @@ describe("session actions", () => {
     expect(() => undoSnapshot(root, escapedSession)).toThrow("outside this project")
     expect(readFileSync(join(root, ".npmrc"), "utf8")).toBe("after")
     expect(readFileSync(join(outside, "outside.txt"), "utf8")).toBe("after")
+  })
+
+  it("renders tracked writes as a unified diff", () => {
+    const diff = snapshotUnifiedDiff({ path: "src/a.ts", before: "const a = 1\n", after: "const a = 2\n", time: 1 })
+    expect(diff).toContain("--- a/src/a.ts")
+    expect(diff).toContain("+++ b/src/a.ts")
+    expect(diff).toContain("-const a = 1")
+    expect(diff).toContain("+const a = 2")
+  })
+
+  it("reverts snapshots linked to a message and restores its prompt", () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-message-revert-"))
+    writeFileSync(join(root, "a.txt"), "after")
+    const withChange = recordSnapshot({
+      ...session,
+      messages: [
+        { id: "u1", role: "user" as const, text: "change it", time: 1 },
+        { id: "a1", role: "assistant" as const, text: "done", time: 2 },
+      ],
+    }, { path: "a.txt", before: "before", after: "after", time: 2, messageID: "u1" })
+    const result = revertToMessage(root, withChange, "u1")
+    expect(readFileSync(join(root, "a.txt"), "utf8")).toBe("before")
+    expect(result.session.messages).toEqual([])
+    expect(result.session.draft).toBe("change it")
+    expect(result.reverted).toHaveLength(1)
   })
 })

@@ -18,7 +18,7 @@ describe("resolveConfig", () => {
 
   it("uses freellmapi as default provider with env key", () => {
     process.env.FREELLMAPI_KEY = "test-key"
-    const config = resolveConfig([])
+    const config = resolveConfig([], {})
     expect(config.provider).toBe("freellmapi")
     expect(config.model).toBe("auto")
     expect(config.apiKey).toBe("test-key")
@@ -47,15 +47,17 @@ describe("resolveConfig", () => {
 
   it("accepts --api-key override", () => {
     process.env.FREELLMAPI_KEY = "env-key"
-    const config = resolveConfig(["--api-key", "sk-custom"])
+    const config = resolveConfig(["--api-key", "sk-custom"], {})
     expect(config.apiKey).toBe("sk-custom")
     expect(config.provider).toBe("freellmapi")
   })
 
-  it("fails fast when a hosted provider key is missing", () => {
+  it("starts the TUI when a hosted provider key is missing so it can be entered interactively", () => {
     process.env.FREELLMAPI_KEY = ""
     process.env.OPENROUTER_KEY = ""
-    expect(() => resolveConfig(["--provider", "openrouter"])).toThrow("OPENROUTER_KEY")
+    const config = resolveConfig(["--provider", "openrouter"])
+    expect(config.provider).toBe("openrouter")
+    expect(config.apiKey).toBe("")
   })
 
   it("prioritizes --api-key flag over environment variable", () => {
@@ -71,7 +73,7 @@ describe("resolveConfig", () => {
 
   it("ignores unknown flags", () => {
     process.env.FREELLMAPI_KEY = "test-key"
-    const config = resolveConfig(["--verbose", "--debug"])
+    const config = resolveConfig(["--verbose", "--debug"], {})
     expect(config.provider).toBe("freellmapi")
     expect(config.model).toBe("auto")
   })
@@ -90,9 +92,30 @@ describe("resolveConfig", () => {
     }
   })
 
+  it("round-trips global model favorites and recents", () => {
+    const directory = mkdtempSync(join(tmpdir(), "nimbl-model-history-"))
+    const file = join(directory, "config.json")
+    try {
+      saveGlobalConfig({ favoriteModels: ["openai::gpt-4.1"], recentModels: ["anthropic::claude-sonnet-4-5"] }, file)
+      expect(loadGlobalConfig(file)).toMatchObject({
+        favoriteModels: ["openai::gpt-4.1"],
+        recentModels: ["anthropic::claude-sonnet-4-5"],
+      })
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it("prefers environment keys over globally saved keys", () => {
     process.env.OPENROUTER_KEY = "environment-key"
     const config = resolveConfig([], { provider: "openrouter", providerKeys: { openrouter: "global-key" } })
     expect(config.apiKey).toBe("environment-key")
+  })
+
+  it("ignores a stale saved provider and model instead of crashing before the TUI opens", () => {
+    delete process.env.NIMBL_PROVIDER
+    delete process.env.NIMBL_MODEL
+    const config = resolveConfig([], { provider: "removed-provider", model: "removed-model" })
+    expect(config).toMatchObject({ provider: "freellmapi", model: "auto", apiKey: "local" })
   })
 })

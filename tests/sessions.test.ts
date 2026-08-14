@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { mkdtempSync } from "node:fs"
-import { applySessionRetention, backupInvalidSessionStore, lastRequestUsage, loadSessionStore, saveSessionStore, sessionUsage, SessionStoreConflictError, SessionStoreLockedError, type SessionStore } from "@/core/sessions"
+import { applySessionRetention, backupInvalidSessionStore, lastRequestUsage, loadSessionStore, saveSessionStore, sessionUsage, SessionStoreConflictError, SessionStoreLockedError, type SessionStore, type StoredSession } from "@/core/sessions"
 
 describe("session persistence", () => {
   it("migrates legacy flat reasoning and tool messages into assistant parts", () => {
@@ -229,6 +229,38 @@ describe("session persistence", () => {
       ],
     }
     expect(lastRequestUsage(stored)).toEqual(request)
-    expect(sessionUsage(stored)).toEqual({ inputTokens: 20, outputTokens: 5, totalTokens: 35, referenceCostUsd: 0.003, providerCostUsd: 0.0005 })
+    expect(sessionUsage(stored)).toEqual({ inputTokens: 20, outputTokens: 5, totalTokens: 35, referenceCostUsd: 0.003, providerCostUsd: 0.0005, providerCostKnown: true })
+  })
+
+  it("keeps an explicit zero provider cost distinct from an unknown price", () => {
+    const session: StoredSession = {
+      id: "free-model",
+      title: "Free model",
+      agent: "build" as const,
+      created: 1,
+      messages: [],
+    }
+    session.messages = [{
+      id: "free-request",
+      role: "assistant",
+      text: "ok",
+      time: 1,
+      usage: {
+        inputTokens: 22_000,
+        outputTokens: 0,
+        totalTokens: 22_000,
+        referenceCostUsd: 0.26,
+        providerCostUsd: 0,
+        contextWindow: 128_000,
+        attempts: 1,
+        latencyMs: 1,
+      },
+    }]
+    expect(sessionUsage(session)).toMatchObject({
+      totalTokens: 22_000,
+      referenceCostUsd: 0.26,
+      providerCostUsd: 0,
+      providerCostKnown: true,
+    })
   })
 })

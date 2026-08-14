@@ -61,6 +61,8 @@ export const theme = {
   syntaxType: "#e5c07b",
   syntaxOperator: "#56b6c2",
   syntaxPunctuation: "#eeeeee",
+
+  thinkingOpacity: 0.6,
 } as const
 
 export function agentColor(mode: AgentMode): string {

@@ -45,6 +45,8 @@ export type StoredAssistantPart =
       output?: string
       diff?: string
       path?: string
+      started?: number
+      ended?: number
     }
 
 export interface StoredMessage {
@@ -97,6 +99,7 @@ export interface StoredUsageTotals {
   totalTokens: number
   referenceCostUsd: number
   providerCostUsd: number
+  providerCostKnown: boolean
 }
 
 export interface StoredSession {
@@ -119,6 +122,15 @@ export interface StoredSession {
   legacyUsage?: LegacySessionUsage
   snapshots?: import("./session-actions").FileSnapshot[]
   redoSnapshots?: import("./session-actions").FileSnapshot[]
+  draft?: string
+  draftHistory?: string[]
+  stashes?: { id: string; text: string; created: number }[]
+  queuedPrompts?: { id: string; text: string; created: number; priority?: number }[]
+  runState?: "idle" | "running" | "failed" | "interrupted" | "queued"
+  todos?: { id: string; content: string; status: "pending" | "in_progress" | "completed" }[]
+  unread?: boolean
+  tags?: string[]
+  share?: import("./share").HostedShare
 }
 
 export interface SessionStore {
@@ -275,6 +287,13 @@ function validSession(value: unknown) {
     && value.messages.every(validMessage)
     && (value.archivedMessages === undefined || (Array.isArray(value.archivedMessages) && value.archivedMessages.every(validMessage)))
     && (value.compaction === undefined || validCompaction(value.compaction))
+    && optionalString(value.draft)
+    && (value.draftHistory === undefined || (Array.isArray(value.draftHistory) && value.draftHistory.every((item) => typeof item === "string")))
+    && (value.stashes === undefined || (Array.isArray(value.stashes) && value.stashes.every((item) => isRecord(item) && typeof item.id === "string" && typeof item.text === "string" && typeof item.created === "number")))
+    && (value.queuedPrompts === undefined || (Array.isArray(value.queuedPrompts) && value.queuedPrompts.every((item) => isRecord(item) && typeof item.id === "string" && typeof item.text === "string" && typeof item.created === "number")))
+    && (value.runState === undefined || ["idle", "running", "failed", "interrupted", "queued"].includes(String(value.runState)))
+    && (value.todos === undefined || (Array.isArray(value.todos) && value.todos.every((item) => isRecord(item) && typeof item.id === "string" && typeof item.content === "string" && ["pending", "in_progress", "completed"].includes(String(item.status)))))
+    && (value.tags === undefined || (Array.isArray(value.tags) && value.tags.every((item) => typeof item === "string")))
 }
 
 export function migrateSessionStoreV1(value: Record<string, unknown>): SessionStore {
@@ -302,6 +321,7 @@ export function sessionUsage(session: StoredSession): StoredUsageTotals {
     totalTokens: session.legacyUsage?.totalTokens || 0,
     referenceCostUsd: session.legacyUsage?.referenceCostUsd || 0,
     providerCostUsd: 0,
+    providerCostKnown: false,
   }
   for (const message of [...(session.archivedMessages || []), ...session.messages]) {
     if (!message.usage) continue
@@ -309,7 +329,10 @@ export function sessionUsage(session: StoredSession): StoredUsageTotals {
     totals.outputTokens += message.usage.outputTokens
     totals.totalTokens += message.usage.totalTokens
     totals.referenceCostUsd += message.usage.referenceCostUsd
-    totals.providerCostUsd += message.usage.providerCostUsd || 0
+    if (message.usage.providerCostUsd !== undefined) {
+      totals.providerCostKnown = true
+      totals.providerCostUsd += message.usage.providerCostUsd
+    }
   }
   return totals
 }

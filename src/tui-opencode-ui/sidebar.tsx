@@ -6,7 +6,7 @@ import type { AssistantPart, ChatSession } from "./types"
 export interface SidebarProps {
   session: ChatSession
   cwd: string
-  cost: number
+  cost?: number
   overlay?: boolean
 }
 
@@ -231,7 +231,9 @@ export function Sidebar(props: SidebarProps) {
             </text>
             <text fg={theme.textMuted}>{tokens().toLocaleString()} tokens</text>
             <text fg={theme.textMuted}>{percent()}% used</text>
-            <text fg={theme.textMuted}>{money.format(props.cost)} reference estimate</text>
+            <Show when={props.cost !== undefined} fallback={<text fg={theme.textMuted}>Provider cost unavailable</text>}>
+              <text fg={theme.textMuted}>{money.format(props.cost!)} estimated provider cost</text>
+            </Show>
           </box>
 
           <Show when={showTodos()}>

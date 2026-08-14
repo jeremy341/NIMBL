@@ -16,12 +16,47 @@ export interface SnapshotFileChange {
 export interface FileSnapshot extends SnapshotFileChange {
   time: number
   changes?: SnapshotFileChange[]
+  /** User message whose agent run produced this filesystem change. */
+  messageID?: string
 }
 
 export interface SessionWithSnapshots extends StoredSession {
   snapshots?: FileSnapshot[]
   redoSnapshots?: FileSnapshot[]
 }
+
+export function setDraft<T extends StoredSession>(session: T, draft: string): T {
+  const history = draft === session.draft ? session.draftHistory || [] : [...(session.draftHistory || []), ...(session.draft ? [session.draft] : [])].filter(Boolean).slice(-50)
+  return { ...session, draft, draftHistory: history, updated: Date.now() }
+}
+
+export function navigateDraft<T extends StoredSession>(session: T, direction: "previous" | "next"): T {
+  const history = session.draftHistory || []; if (!history.length) return session
+  const found = session.draft ? history.lastIndexOf(session.draft) : -1
+  const current = found >= 0 ? found : direction === "previous" ? history.length : -1
+  const index = direction === "previous" ? Math.max(0, current - 1) : Math.min(history.length - 1, current + 1)
+  return { ...session, draft: history[index] || "" }
+}
+
+export function stashDraft<T extends StoredSession>(session: T, text = session.draft || ""): T {
+  if (!text.trim()) return session
+  return { ...session, draft: "", stashes: [...(session.stashes || []), { id: crypto.randomUUID(), text, created: Date.now() }].slice(-20), updated: Date.now() }
+}
+
+export function popDraft<T extends StoredSession>(session: T): T {
+  const stashes = [...(session.stashes || [])]; const item = stashes.pop(); return item ? { ...session, draft: item.text, stashes, updated: Date.now() } : session
+}
+
+export function queuePrompt<T extends StoredSession>(session: T, text: string, limit = 20): T {
+  if (!text.trim()) return session
+  return { ...session, queuedPrompts: [...(session.queuedPrompts || []), { id: crypto.randomUUID(), text, created: Date.now() }].slice(-limit), runState: "queued", updated: Date.now() }
+}
+
+export function dequeuePrompt<T extends StoredSession>(session: T): { session: T; prompt?: string } {
+  const [item, ...rest] = session.queuedPrompts || []; return { session: { ...session, queuedPrompts: rest, runState: rest.length ? "queued" : session.runState }, prompt: item?.text }
+}
+
+export function setTodos<T extends StoredSession>(session: T, todos: NonNullable<StoredSession["todos"]>): T { return { ...session, todos: todos.slice(0, 100), updated: Date.now() } }
 
 export function renameSession<T extends StoredSession>(session: T, title: string): T {
   const next = title.trim().replace(/\s+/g, " ").slice(0, 80)
@@ -49,7 +84,7 @@ export function recordSnapshot<T extends SessionWithSnapshots>(session: T, snaps
   return { ...session, snapshots, redoSnapshots: [], updated: Date.now() }
 }
 
-export function recordSnapshotGroup<T extends SessionWithSnapshots>(session: T, changes: SnapshotFileChange[], time: number): T {
+export function recordSnapshotGroup<T extends SessionWithSnapshots>(session: T, changes: SnapshotFileChange[], time: number, messageID?: string): T {
   if (!changes.length) return session
   const first = changes[0]!
   return recordSnapshot(session, {
@@ -57,6 +92,7 @@ export function recordSnapshotGroup<T extends SessionWithSnapshots>(session: T, 
     path: changes.map((change) => change.path).join(", "),
     changes,
     time,
+    messageID,
   })
 }
 
@@ -110,6 +146,58 @@ export function redoSnapshot<T extends SessionWithSnapshots>(root: string, sessi
   return {
     snapshot,
     session: { ...session, snapshots: [...(session.snapshots || []), snapshot], redoSnapshots: session.redoSnapshots!.slice(0, -1), updated: Date.now() },
+  }
+}
+
+function diffLines(value: string) {
+  const lines = value.replace(/\r\n/g, "\n").split("\n")
+  if (lines.at(-1) === "") lines.pop()
+  return lines
+}
+
+/** Render a valid unified diff for OpenTUI's native diff component. */
+export function snapshotUnifiedDiff(snapshot: FileSnapshot): string {
+  return snapshotChanges(snapshot).map((change) => {
+    const before = diffLines(change.before)
+    const after = diffLines(change.after)
+    const oldPath = change.beforeExists === false ? "/dev/null" : `a/${change.path.replace(/\\/g, "/")}`
+    const newPath = change.afterExists === false ? "/dev/null" : `b/${change.path.replace(/\\/g, "/")}`
+    return [
+      `--- ${oldPath}`,
+      `+++ ${newPath}`,
+      `@@ -1,${before.length} +1,${after.length} @@`,
+      ...before.map((line) => `-${line}`),
+      ...after.map((line) => `+${line}`),
+    ].join("\n")
+  }).join("\n")
+}
+
+/** OpenCode-style message revert: restore files, trim the turn, restore the prompt. */
+export function revertToMessage<T extends SessionWithSnapshots>(root: string, session: T, messageID: string): { session: T; reverted: FileSnapshot[] } {
+  const messageIndex = session.messages.findIndex((message) => message.id === messageID)
+  const message = session.messages[messageIndex]
+  if (messageIndex < 0 || !message || message.role !== "user") throw new Error("Only a user prompt can be reverted.")
+  const messageOrder = new Map(session.messages.map((item, index) => [item.id, index]))
+  let current = session
+  const reverted: FileSnapshot[] = []
+  while (current.snapshots?.length) {
+    const snapshot = current.snapshots.at(-1)!
+    const linkedIndex = snapshot.messageID ? messageOrder.get(snapshot.messageID) : undefined
+    const belongsToTurn = linkedIndex !== undefined ? linkedIndex >= messageIndex : snapshot.time >= message.time
+    if (!belongsToTurn) break
+    const result = undoSnapshot(root, current)
+    if (!result.snapshot) break
+    current = result.session
+    reverted.push(result.snapshot)
+  }
+  return {
+    reverted,
+    session: {
+      ...current,
+      messages: current.messages.slice(0, messageIndex),
+      draft: message.text,
+      updated: Date.now(),
+    },
   }
 }
 

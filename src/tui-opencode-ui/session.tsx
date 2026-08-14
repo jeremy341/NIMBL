@@ -1,11 +1,11 @@
 import { RGBA, TextAttributes, type BoxRenderable, type ScrollBoxRenderable } from "@opentui/core"
-import { useRenderer, useTerminalDimensions } from "@opentui/solid"
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { stripEmojis } from "@/core/response-style"
 import { SplitBorder, setBorder } from "./border"
 import { PermissionPrompt, QuestionPrompt } from "./docked-prompts"
-import { NativeDiff, NativeMarkdown } from "./native"
+import { NativeCode, NativeDiff, NativeMarkdown } from "./native"
 import { SessionPrompt } from "./prompt"
 import { Sidebar } from "./sidebar"
 import { Spinner } from "./spinner"
@@ -25,34 +25,59 @@ export interface SessionScreenProps {
   promptValue: string
   onPromptInput(v: string): void
   onPromptSubmit(v: string): void
+  onPromptQuit?(): void
+  onHistory?(direction: "previous" | "next"): void
   onAbort(): void
   commands: CommandOption[]
+  agents?: CommandOption[]
+  files?: string[]
   onCommand(v: string): void
   onMessageAction(id: string): void
   focusMessageID?: string
   sidebarVisible: boolean
+  onCloseSidebar?: () => void
   contentWidth?: number
   keyboardDisabled?: boolean
   contextText?: string
-  cost: number
-  pendingApproval?: { title: string; detail: string; diff?: string }
+  cost?: number
+  pendingApproval?: { title: string; detail: string; diff?: string; tool?: string }
   onApproval?(choice: "once" | "always" | "reject"): void
-  pendingQuestion?: { prompt: string; options: string[] }
+  onRejectWithMessage?(message: string): void
+  pendingQuestion?: { prompt: string; options: string[]; freeform?: boolean }
   onQuestion?(answer: string): void
   promptRef?: (value: SessionPromptRef | undefined) => void
+  subagentNavigation?: { index: number; total: number; parentTitle: string; label?: string; usage?: string; onParent(): void; onPrevious(): void; onNext(): void }
+  onSubagentClick?: () => void
+  conceal?: boolean
+  thinkingMode?: "show" | "hide"
+  showTimestamps?: boolean
+  queued?: boolean
+  hasCompaction?: boolean
+  retry?: { message: string; attempt: number; next: number }
+  onRetryClick?: () => void
 }
 
 function titlecase(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
+// opencode-parity duration: ms → 1.5s → 1m 2s → 1h 2m → 1d 2h
 function duration(milliseconds: number): string {
   if (milliseconds < 1_000) return `${Math.max(0, Math.round(milliseconds))}ms`
-  const seconds = Math.round(milliseconds / 1_000)
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  const remainder = seconds % 60
-  return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`
+  if (milliseconds < 60_000) return `${(milliseconds / 1_000).toFixed(1)}s`
+  if (milliseconds < 3_600_000) {
+    const minutes = Math.floor(milliseconds / 60_000)
+    const seconds = Math.floor((milliseconds % 60_000) / 1_000)
+    return `${minutes}m ${seconds}s`
+  }
+  if (milliseconds < 86_400_000) {
+    const hours = Math.floor(milliseconds / 3_600_000)
+    const minutes = Math.floor((milliseconds % 3_600_000) / 60_000)
+    return `${hours}h ${minutes}m`
+  }
+  const days = Math.floor(milliseconds / 86_400_000)
+  const hours = Math.floor((milliseconds % 86_400_000) / 3_600_000)
+  return `${days}d ${hours}h`
 }
 
 function stripAnsi(value: string): string {
@@ -99,6 +124,23 @@ function filetype(path: string | undefined): string | undefined {
 
 function hasSelection(renderer: ReturnType<typeof useRenderer>): boolean {
   return Boolean(renderer.getSelection()?.getSelectedText())
+}
+
+function SubagentButton(props: { label: string; onTrigger: () => void }) {
+  const renderer = useRenderer()
+  const [hover, setHover] = createSignal(false)
+  return (
+    <box
+      paddingLeft={1}
+      paddingRight={1}
+      backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
+      onMouseOver={() => setHover(true)}
+      onMouseOut={() => setHover(false)}
+      onMouseUp={() => { if (hasSelection(renderer)) return; props.onTrigger() }}
+    >
+      <text fg={hover() ? theme.text : theme.textMuted}>{props.label}</text>
+    </box>
+  )
 }
 
 function OutputPreview(props: { output: string; maxLines: number; width: number; color?: string }) {
@@ -151,7 +193,7 @@ export function InlineTool(props: InlineToolProps) {
     >
       <Show
         when={!running()}
-        fallback={<Spinner color={color()}>{props.pending}</Spinner>}
+        fallback={<Spinner color={color()}>~ {props.pending}</Spinner>}
       >
         <box flexDirection="row">
           <text
@@ -190,11 +232,18 @@ export interface BlockToolProps {
   title?: string
   children: JSX.Element
   onClick?: () => void
+  onHeaderClick?: () => void
+  /** Completed tool details are collapsed by default, like OpenCode. */
+  collapsible?: boolean
+  initialExpanded?: boolean
 }
 
 export function BlockTool(props: BlockToolProps) {
   const renderer = useRenderer()
   const [hover, setHover] = createSignal(false)
+  const collapsible = () => props.collapsible === true
+  const [expanded, setExpanded] = createSignal(props.initialExpanded ?? !collapsible())
+  const displayTitle = () => props.title ?? "# Tool details"
   const running = () => props.part.state === "running"
   const failed = () => props.part.state === "failed"
   const rejected = () => props.part.state === "rejected"
@@ -210,32 +259,37 @@ export function BlockTool(props: BlockToolProps) {
       customBorderChars={SplitBorder.customBorderChars}
       borderColor={failed() ? theme.error : theme.background}
       ref={(value: BoxRenderable) => setBorder(value, ["left"], SplitBorder.customBorderChars)}
-      onMouseOver={() => props.onClick && setHover(true)}
+      onMouseOver={() => (props.onClick || collapsible()) && setHover(true)}
       onMouseOut={() => setHover(false)}
-      onMouseUp={() => {
-        if (hasSelection(renderer)) return
-        props.onClick?.()
-      }}
     >
-      <Show when={props.title}>
-        {(title) => (
+      <Show when={Boolean(props.title) || collapsible()}>
+        <box
+          flexDirection="row"
+          onMouseUp={(event: any) => {
+            if (hasSelection(renderer)) return
+            event.stopPropagation?.()
+            if (props.onHeaderClick) props.onHeaderClick()
+            else if (collapsible()) setExpanded((value) => !value)
+          }}
+        >
+          <text paddingLeft={1} width={2} fg={collapsible() ? theme.primary : theme.textMuted}>{collapsible() ? (expanded() ? "−" : "+") : " "}</text>
           <Show
             when={!running()}
-            fallback={<Spinner color={theme.textMuted}>{title().replace(/^# /, "")}</Spinner>}
+            fallback={<Spinner color={theme.textMuted}>{displayTitle().replace(/^# /, "")}</Spinner>}
           >
             <text
-              paddingLeft={3}
+              paddingLeft={2}
               fg={failed() ? theme.error : theme.textMuted}
               attributes={rejected() ? TextAttributes.STRIKETHROUGH : undefined}
             >
-              {title()}
+              {displayTitle()}
               <Show when={rejected()}> (rejected)</Show>
               <Show when={failed()}> (failed)</Show>
             </text>
           </Show>
-        )}
+        </box>
       </Show>
-      {props.children}
+      <Show when={!collapsible() || expanded()}>{props.children}</Show>
       <Show when={failed() && props.part.detail}>
         <text fg={theme.error}>{props.part.detail}</text>
       </Show>
@@ -260,7 +314,62 @@ function toolText(part: ToolPart, verb?: string): string {
   return `${prefix}${target}${detail}`.trim()
 }
 
-function ToolPartView(props: { part: ToolPart; width: number }) {
+function countLines(value: string | undefined): number | undefined {
+  if (!value) return undefined
+  const lines = value.split("\n").filter((line) => line.trim())
+  return lines.length || undefined
+}
+
+function plural(count: number, singular: string): string {
+  return count === 1 ? singular : singular + "s"
+}
+
+function TodoItem(props: { status: string; content: string }) {
+  const color = () => (props.status === "in_progress" ? theme.warning : theme.textMuted)
+  return (
+    <box flexDirection="row" gap={0}>
+      <text flexShrink={0} fg={color()}>
+        [{props.status === "completed" ? "✓" : props.status === "in_progress" ? "•" : " "}]{" "}
+      </text>
+      <text flexGrow={1} wrapMode="word" fg={color()}>
+        {props.content}
+      </text>
+    </box>
+  )
+}
+
+function parseTodoOutput(output: string | undefined): { status: string; content: string }[] {
+  if (!output) return []
+  const source = output.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")
+  try {
+    const parsed = JSON.parse(source)
+    if (Array.isArray(parsed)) {
+      const items = parsed.flatMap((item): { status: string; content: string }[] => {
+        if (typeof item === "string") return [{ status: "pending", content: item }]
+        if (!item || typeof item !== "object") return []
+        const record = item as Record<string, unknown>
+        const content = record.content ?? record.title ?? record.text
+        const status = String(record.status ?? "pending")
+        if (typeof content !== "string" || !content.trim()) return []
+        return [{ status, content: content.trim() }]
+      })
+      if (items.length) return items
+    }
+  } catch { /* fall through to markdown list */ }
+  return source.split("\n").flatMap((line): { status: string; content: string }[] => {
+    const checkbox = line.match(/^\s*(?:[-*]\s*)?\[([ xX~>])\]\s+(.+)$/)
+    if (checkbox) {
+      const marker = checkbox[1]!.toLowerCase()
+      return [{ status: marker === "x" ? "completed" : marker === "~" || marker === ">" ? "in_progress" : "pending", content: checkbox[2]!.trim() }]
+    }
+    const labelled = line.match(/^\s*(?:[-*]\s*)?(pending|in[_ -]?progress|running|completed|done)\s*[:|-]\s*(.+)$/i)
+    if (!labelled) return []
+    const status = labelled[1]!.toLowerCase().replace(/\s+/g, "_").replace("in_progress", "in_progress")
+    return [{ status: status === "done" ? "completed" : status, content: labelled[2]!.trim() }]
+  })
+}
+
+function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: () => void }) {
   const tool = createMemo(() => canonicalTool(props.part.tool))
   const output = () => props.part.output?.trim()
 
@@ -270,7 +379,7 @@ function ToolPartView(props: { part: ToolPart; width: number }) {
         if (name === "bash" || name === "shell") {
           if (output()) {
             return (
-              <BlockTool part={props.part} title={props.part.path ? `# Running in ${props.part.path}` : undefined}>
+              <BlockTool part={props.part} collapsible initialExpanded={props.part.state === "running"} title={props.part.path ? `# Running in ${props.part.path}` : undefined}>
                 <box gap={1}>
                   <text fg={theme.text}>$ {props.part.detail ?? props.part.title}</text>
                   <OutputPreview output={output()!} maxLines={10} width={props.width} />
@@ -286,25 +395,37 @@ function ToolPartView(props: { part: ToolPart; width: number }) {
         }
 
         if (name === "read") {
+          const loaded = props.part.state === "completed" && props.part.path ? `↳ Loaded ${props.part.path}` : undefined
           return (
             <InlineTool part={props.part} icon="→" pending="Reading file...">
               {toolText(props.part, "Read")}
+              <Show when={loaded}>
+                <text fg={theme.textMuted}>{loaded}</text>
+              </Show>
             </InlineTool>
           )
         }
 
         if (name === "glob") {
+          const count = countLines(output())
           return (
             <InlineTool part={props.part} icon="✱" pending="Finding files...">
               {toolText(props.part, "Glob")}
+              <Show when={count !== undefined}>
+                <span style={{ fg: theme.textMuted }}> ({count} {plural(count!, "match")})</span>
+              </Show>
             </InlineTool>
           )
         }
 
         if (name === "grep") {
+          const count = countLines(output())
           return (
             <InlineTool part={props.part} icon="✱" pending="Searching content...">
               {toolText(props.part, "Grep")}
+              <Show when={count !== undefined}>
+                <span style={{ fg: theme.textMuted }}> ({count} {plural(count!, "match")})</span>
+              </Show>
             </InlineTool>
           )
         }
@@ -312,7 +433,7 @@ function ToolPartView(props: { part: ToolPart; width: number }) {
         if (name === "write") {
           if (props.part.diff || output()) {
             return (
-              <BlockTool part={props.part} title={`# Wrote ${props.part.path ?? props.part.title}`}>
+              <BlockTool part={props.part} collapsible initialExpanded={props.part.state === "running"} title={`# Wrote ${props.part.path ?? props.part.title}`}>
                 {props.part.diff ? (
                   <DiffView diff={props.part.diff} path={props.part.path} width={props.width} />
                 ) : (
@@ -333,6 +454,8 @@ function ToolPartView(props: { part: ToolPart; width: number }) {
             return (
               <BlockTool
                 part={props.part}
+                collapsible
+                initialExpanded={props.part.state === "running"}
                 title={`${name === "edit" ? "← Edit" : "← Patched"} ${props.part.path ?? props.part.title}`}
               >
                 <DiffView diff={props.part.diff} path={props.part.path} width={props.width} />
@@ -354,11 +477,24 @@ function ToolPartView(props: { part: ToolPart; width: number }) {
           )
         }
 
+        if (name === "websearch") {
+          const count = countLines(output())
+          return (
+            <InlineTool part={props.part} icon="◈" pending="Searching web...">
+              {toolText(props.part, "WebSearch")}
+              <Show when={count !== undefined}>
+                <span style={{ fg: theme.textMuted }}> ({count} {plural(count!, "result")})</span>
+              </Show>
+            </InlineTool>
+          )
+        }
+
         if (name === "todowrite") {
-          if (output()) {
+          const todos = parseTodoOutput(output())
+          if (todos.length) {
             return (
-              <BlockTool part={props.part} title="# Todos">
-                <OutputPreview output={output()!} maxLines={10} width={props.width} color={theme.textMuted} />
+              <BlockTool part={props.part} collapsible initialExpanded={props.part.state === "running"} title="# Todos">
+                <For each={todos}>{(todo) => <TodoItem status={todo.status} content={todo.content} />}</For>
               </BlockTool>
             )
           }
@@ -372,7 +508,7 @@ function ToolPartView(props: { part: ToolPart; width: number }) {
         if (name === "question") {
           if (output()) {
             return (
-              <BlockTool part={props.part} title="# Questions">
+              <BlockTool part={props.part} collapsible initialExpanded={props.part.state === "running"} title="# Questions">
                 <OutputPreview output={output()!} maxLines={10} width={props.width} />
               </BlockTool>
             )
@@ -392,9 +528,39 @@ function ToolPartView(props: { part: ToolPart; width: number }) {
           )
         }
 
+        if (name === "delegate" || name === "task") {
+          const running = props.part.state === "running"
+          const detail = props.part.detail || props.part.title
+          const title = `Subagent Task — ${detail}`
+          const partDuration = props.part.started !== undefined && props.part.ended !== undefined
+            ? duration(Math.max(0, props.part.ended - props.part.started))
+            : undefined
+          return (
+            <BlockTool
+              part={props.part}
+              collapsible
+              initialExpanded={running}
+              onClick={props.onSubagentClick}
+              title={"# " + title}
+            >
+              <box gap={1} onMouseUp={(event: any) => { event.stopPropagation?.(); props.onSubagentClick?.() }}>
+                <text fg={theme.textMuted}>
+                  {title}
+                  <Show when={partDuration && !running}>
+                    <span style={{ fg: theme.textMuted }}> · {partDuration}</span>
+                  </Show>
+                </text>
+                <Show when={output() && (props.part.state === "failed" || props.part.state === "completed")}>
+                  <NativeMarkdown content={output()!} />
+                </Show>
+              </box>
+            </BlockTool>
+          )
+        }
+
         if (output()) {
           return (
-            <BlockTool part={props.part} title={`# ${props.part.tool} ${props.part.title}`}>
+            <BlockTool part={props.part} collapsible initialExpanded={props.part.state === "running"} title={`# ${props.part.tool} ${props.part.title}`}>
               <OutputPreview output={output()!} maxLines={3} width={props.width} />
             </BlockTool>
           )
@@ -420,13 +586,27 @@ function reasoningSummary(value: string): string {
   return line.length > 96 ? line.slice(0, 95) + "…" : line
 }
 
-function ReasoningPartView(props: { part: Extract<AssistantPart, { type: "reasoning" }> }) {
+function reasoningBody(value: string): { title: string; body: string } {
+  const match = value.replace(/\[REDACTED\]/g, "").match(/^\*\*([^*\n]+)\*\*(?:\r?\n\r?\n|$)([\s\S]*)$/)
+  if (!match) return { title: "", body: stripEmojis(value.trim()) }
+  return { title: match[1]!.trim(), body: stripEmojis(match[2]!.trim()) }
+}
+
+function ReasoningPartView(props: { part: Extract<AssistantPart, { type: "reasoning" }>; thinkingMode?: "show" | "hide" }) {
   const [expanded, setExpanded] = createSignal(false)
   const running = () => props.part.ended === undefined
-  const summary = createMemo(() => reasoningSummary(props.part.text))
+  const { title: parsedTitle, body } = reasoningBody(props.part.text)
+  const summary = createMemo(() => parsedTitle || reasoningSummary(props.part.text))
+  const visible = () => props.thinkingMode !== "hide" || expanded()
   const elapsed = createMemo(() =>
     props.part.ended === undefined ? undefined : duration(Math.max(0, props.part.ended - props.part.started)),
   )
+  const color = createMemo(() => {
+    if (props.thinkingMode === "hide" || expanded()) {
+      return RGBA.fromValues(0xf5, 0xa7, 0x42, theme.thinkingOpacity).toString()
+    }
+    return theme.warning
+  })
 
   return (
     <Show when={props.part.text.trim()}>
@@ -434,19 +614,19 @@ function ReasoningPartView(props: { part: Extract<AssistantPart, { type: "reason
         <box onMouseUp={() => setExpanded((value) => !value)}>
           <Show
             when={!running()}
-            fallback={<Spinner color={theme.warning}>Thinking: {summary()}</Spinner>}
+            fallback={<Spinner color={color()}>Thinking: {summary()}</Spinner>}
           >
-            <text fg={theme.warning} wrapMode="none">
-              {expanded() ? "- " : "+ "}Thought: {summary()}
+            <text fg={color()} wrapMode="none">
+              {props.thinkingMode === "hide" || expanded() ? "- " : "+ "}Thought: {summary()}
               <Show when={elapsed()}>
                 {(value) => <span style={{ fg: theme.textMuted }}> · {value()}</span>}
               </Show>
             </text>
           </Show>
         </box>
-        <Show when={expanded()}>
+        <Show when={visible()}>
           <box paddingLeft={2} marginTop={1}>
-            <NativeMarkdown content={stripEmojis(props.part.text.trim())} color={theme.textMuted} />
+            <NativeMarkdown content={body} color={theme.textMuted} />
           </box>
         </Show>
       </box>
@@ -454,11 +634,40 @@ function ReasoningPartView(props: { part: Extract<AssistantPart, { type: "reason
   )
 }
 
-function AssistantTextPart(props: { text: string }) {
+function AssistantTextPart(props: { text: string; conceal?: boolean }) {
+  const blocks = createMemo(() => {
+    const result: Array<{ type: "markdown" | "code"; content: string; language?: string }> = []
+    const pattern = /```([^\n`]*)\n([\s\S]*?)```/g
+    let cursor = 0
+    for (const match of props.text.matchAll(pattern)) {
+      const index = match.index ?? 0
+      if (index > cursor) result.push({ type: "markdown", content: props.text.slice(cursor, index) })
+      result.push({ type: "code", language: match[1]?.trim() || "text", content: match[2]?.replace(/\n$/, "") || "" })
+      cursor = index + match[0].length
+    }
+    if (cursor < props.text.length) result.push({ type: "markdown", content: props.text.slice(cursor) })
+    return result.length ? result : [{ type: "markdown" as const, content: props.text }]
+  })
+
+  function ConcealedCode(props: { content: string; language?: string; conceal?: boolean }) {
+    const lines = () => props.content.split("\n")
+    const concealed = () => props.conceal === true && lines().length > 12
+    const [revealed, setRevealed] = createSignal(false)
+    const visible = () => concealed() && !revealed() ? lines().slice(0, 12).join("\n") + "\n…" : props.content
+    return (
+      <box paddingLeft={1} paddingRight={1} backgroundColor={theme.backgroundPanel} onMouseUp={() => concealed() && setRevealed((value) => !value)}>
+        <NativeCode content={visible()} filetype={props.language} />
+      </box>
+    )
+  }
+
   return (
     <Show when={props.text.trim()}>
-      <box paddingLeft={3} marginTop={1} flexShrink={0}>
-        <NativeMarkdown content={stripEmojis(props.text.trim())} />
+      <box paddingLeft={3} marginTop={1} flexShrink={0} gap={1}>
+        <For each={blocks()}>{(block) => block.type === "code"
+          ? <ConcealedCode content={block.content} language={block.language} conceal={props.conceal} />
+          : <NativeMarkdown content={stripEmojis(block.content.trim())} conceal={props.conceal} />}
+        </For>
       </box>
     </Show>
   )
@@ -469,10 +678,20 @@ function UserMessage(props: {
   index: number
   fallbackAgent: AgentMode
   onAction: (id: string) => void
+  queued?: boolean
+  showTimestamps?: boolean
 }) {
   const renderer = useRenderer()
   const [hover, setHover] = createSignal(false)
   const color = () => agentColor(props.message.agent ?? props.fallbackAgent)
+  const timeLabel = () => {
+    const date = new Date(props.message.time)
+    const today = new Date()
+    const sameDay = date.toDateString() === today.toDateString()
+    const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    if (sameDay) return time
+    return `${time} · ${date.toLocaleDateString([], { month: "short", day: "numeric", year: date.getFullYear() !== today.getFullYear() ? "numeric" : undefined })}`
+  }
 
   return (
     <box
@@ -513,12 +732,22 @@ function UserMessage(props: {
             </For>
           </box>
         </Show>
+        <Show when={props.queued || (props.showTimestamps && props.message.time)}>
+          <box flexDirection="row" paddingTop={1} gap={1} alignItems="center">
+            <Show when={props.queued}>
+              <span style={{ bg: color(), fg: theme.background, bold: true }}> QUEUED </span>
+            </Show>
+            <Show when={props.showTimestamps && props.message.time}>
+              <text fg={theme.textMuted}>{timeLabel()}</text>
+            </Show>
+          </box>
+        </Show>
       </box>
     </box>
   )
 }
 
-function AssistantMessage(props: { message: ChatMessage; fallbackAgent: AgentMode; fallbackModel: string; width: number }) {
+function AssistantMessage(props: { message: ChatMessage; fallbackAgent: AgentMode; fallbackModel: string; width: number; onSubagentClick?: () => void; conceal?: boolean; thinkingMode?: "show" | "hide"; last?: boolean; userTime?: number }) {
   const parts = createMemo<AssistantPart[]>(() => {
     if (props.message.parts?.length) return props.message.parts
     if (!props.message.text) return []
@@ -526,18 +755,30 @@ function AssistantMessage(props: { message: ChatMessage; fallbackAgent: AgentMod
   })
   const mode = () => props.message.agent ?? props.fallbackAgent
   const model = () => props.message.model ?? props.fallbackModel
-  const elapsed = () =>
-    props.message.completed === undefined ? undefined : duration(Math.max(0, props.message.completed - props.message.time))
+  const interrupted = () => props.message.error?.includes("Interrupted by user") ?? false
+  // End-to-end duration from the parent user message (opencode behavior).
+  const durationMs = () =>
+    props.message.completed === undefined ? 0 : Math.max(0, props.message.completed - (props.userTime ?? props.message.time))
+  const final = () => props.message.completed !== undefined && props.message.error === undefined
+  const hasSubagents = () => props.message.parts?.some((part) => part.type === "tool" && (part.tool === "delegate" || part.tool === "task")) ?? false
+  const showFooter = () => Boolean(props.last || final() || interrupted())
 
   return (
     <>
       <Index each={parts()}>
         {(part) => {
-          if (part().type === "text") return <AssistantTextPart text={(part() as TextPart).text} />
-          if (part().type === "reasoning") return <ReasoningPartView part={part() as ReasoningPart} />
-          return <ToolPartView part={part() as ToolPart} width={props.width} />
+          if (part().type === "text") return <AssistantTextPart text={(part() as TextPart).text} conceal={props.conceal} />
+          if (part().type === "reasoning") return <ReasoningPartView part={part() as ReasoningPart} thinkingMode={props.thinkingMode ?? (props.conceal ? "hide" : "show")} />
+          return <ToolPartView part={part() as ToolPart} width={props.width} onSubagentClick={props.onSubagentClick} />
         }}
       </Index>
+      <Show when={hasSubagents() && props.message.completed !== undefined}>
+        <box paddingTop={1} paddingLeft={3}>
+          <text fg={theme.textMuted}>
+            <span style={{ fg: theme.primary }}>view</span> <span style={{ fg: theme.textMuted }}>subagents</span>
+          </text>
+        </box>
+      </Show>
       <Show when={props.message.error}>
         {(error) => (
           <box
@@ -550,20 +791,25 @@ function AssistantMessage(props: { message: ChatMessage; fallbackAgent: AgentMod
             borderColor={theme.error}
             ref={(value: BoxRenderable) => setBorder(value, ["left"], SplitBorder.customBorderChars)}
           >
-            <text fg={theme.textMuted}>{error()}</text>
+            <NativeMarkdown content={error()} color={theme.error} />
           </box>
         )}
       </Show>
-      <box paddingLeft={3}>
-        <text marginTop={1}>
-          <span style={{ fg: agentColor(mode()) }}>▣ </span>{" "}
-          <span style={{ fg: theme.text }}>{titlecase(mode())}</span>
-          <span style={{ fg: theme.textMuted }}> · {model()}</span>
-          <Show when={elapsed()}>
-            {(value) => <span style={{ fg: theme.textMuted }}> · {value()}</span>}
-          </Show>
-        </text>
-      </box>
+      <Show when={showFooter()}>
+        <box paddingLeft={3}>
+          <text marginTop={1}>
+            <span style={{ fg: agentColor(mode()) }}>▣ </span>{" "}
+            <span style={{ fg: theme.text }}>{titlecase(mode())}</span>
+            <span style={{ fg: theme.textMuted }}> · {model()}</span>
+            <Show when={durationMs()}>
+              <span style={{ fg: theme.textMuted }}> · {duration(durationMs())}</span>
+            </Show>
+            <Show when={interrupted()}>
+              <span style={{ fg: theme.textMuted }}> · interrupted</span>
+            </Show>
+          </text>
+        </box>
+      </Show>
     </>
   )
 }
@@ -580,7 +826,7 @@ function ErrorMessage(props: { message: ChatMessage; index: number }) {
       borderColor={theme.error}
       ref={(value: BoxRenderable) => setBorder(value, ["left"], SplitBorder.customBorderChars)}
     >
-      <text fg={theme.textMuted}>{props.message.error ?? props.message.text}</text>
+      <NativeMarkdown content={props.message.error ?? props.message.text} color={theme.error} />
     </box>
   )
 }
@@ -602,11 +848,13 @@ function ApprovalDock(props: { screen: SessionScreenProps }) {
       title={approval().title}
       detail={approval().detail}
       diff={approval().diff}
+      tool={approval().tool}
       disabled={props.screen.keyboardDisabled}
       contentWidth={props.screen.contentWidth}
       onOnce={() => props.screen.onApproval?.("once")}
       onAlways={() => props.screen.onApproval?.("always")}
       onReject={() => props.screen.onApproval?.("reject")}
+      onRejectWithMessage={(message) => props.screen.onApproval?.("reject") && props.screen.onRejectWithMessage?.(message)}
     />
   )
 }
@@ -617,6 +865,7 @@ function QuestionDock(props: { screen: SessionScreenProps }) {
     <QuestionPrompt
       prompt={question().prompt}
       options={question().options}
+      freeform={question().freeform}
       disabled={props.screen.keyboardDisabled}
       onAnswer={(answer) => props.screen.onQuestion?.(answer)}
       onCancel={() => props.screen.onQuestion?.("Skipped by user")}
@@ -630,9 +879,13 @@ function ComposerDock(props: { screen: SessionScreenProps }) {
       value={props.screen.promptValue}
       onInput={props.screen.onPromptInput}
       onSubmit={props.screen.onPromptSubmit}
+      onQuit={props.screen.onPromptQuit}
+      onHistory={props.screen.onHistory}
       onAbort={props.screen.onAbort}
       onCommand={props.screen.onCommand}
       commands={props.screen.commands}
+      agents={props.screen.agents}
+      files={props.screen.files}
       agent={props.screen.session.agent}
       provider={props.screen.providerLabel}
       model={props.screen.model}
@@ -640,6 +893,8 @@ function ComposerDock(props: { screen: SessionScreenProps }) {
       status={props.screen.loading ? "busy" : "idle"}
       context={props.screen.contextText}
       disabled={props.screen.keyboardDisabled}
+      retry={props.screen.retry}
+      onRetryClick={props.screen.onRetryClick}
       ref={props.screen.promptRef}
     />
   )
@@ -667,6 +922,15 @@ export function SessionScreen(props: SessionScreenProps) {
     const last = visibleMessages().at(-1)
     if (!last || last.role !== "assistant") return true
     return last.completed !== undefined || (!last.text && !last.parts?.length)
+  })
+
+  useKeyboard((event: any) => {
+    if (!props.sidebarVisible || wide()) return
+    const key = String(event?.name ?? event?.key ?? "").toLowerCase()
+    if (key !== "escape" && key !== "esc") return
+    event.preventDefault?.()
+    event.stopPropagation?.()
+    props.onCloseSidebar?.()
   })
 
   createEffect(() => {
@@ -700,32 +964,56 @@ export function SessionScreen(props: SessionScreenProps) {
           <box height={1} />
           <Show keyed when={props.session.id}>
             {(_sessionID) => (
-              <Index each={visibleMessages()}>
-                {(message, index) => {
-                  if (message().role === "user") {
-                    return (
-                      <UserMessage
-                        message={message()}
-                        index={index}
-                        fallbackAgent={props.session.agent}
-                        onAction={props.onMessageAction}
-                      />
-                    )
-                  }
-                  if (message().role === "assistant") {
-                    return (
-                      <AssistantMessage
-                        message={message()}
-                        fallbackAgent={props.session.agent}
-                        fallbackModel={props.model}
-                        width={props.contentWidth ?? Math.max(20, dimensions().width - 4)}
-                      />
-                    )
-                  }
-                  if (message().role === "error") return <ErrorMessage message={message()} index={index} />
-                  return <SystemMessage message={message()} />
-                }}
-              </Index>
+              <>
+                <Show when={props.hasCompaction && visibleMessages().length > 0}>
+                  <box
+                    marginTop={1}
+                    borderColor={theme.borderActive}
+                    customBorderChars={SplitBorder.customBorderChars}
+                    ref={(value: BoxRenderable) => setBorder(value, ["top"], { ...SplitBorder.customBorderChars, vertical: "" })}
+                    title=" Compaction "
+                    titleAlignment="center"
+                  />
+                </Show>
+                <Index each={visibleMessages()}>
+                  {(message, index) => {
+                    if (message().role === "user") {
+                      return (
+                        <UserMessage
+                          message={message()}
+                          index={index}
+                          fallbackAgent={props.session.agent}
+                          onAction={props.onMessageAction}
+                          queued={props.queued}
+                          showTimestamps={props.showTimestamps}
+                        />
+                      )
+                    }
+                    if (message().role === "assistant") {
+                      let userTime: number | undefined
+                      for (let previous = index - 1; previous >= 0; previous--) {
+                        const prior = visibleMessages()[previous]
+                        if (prior?.role === "user") { userTime = prior.time; break }
+                      }
+                      return (
+                        <AssistantMessage
+                          message={message()}
+                          fallbackAgent={props.session.agent}
+                          fallbackModel={props.model}
+                          width={props.contentWidth ?? Math.max(20, dimensions().width - 4)}
+                          onSubagentClick={props.onSubagentClick}
+                          conceal={props.conceal}
+                          thinkingMode={props.thinkingMode}
+                          last={index === visibleMessages().length - 1}
+                          userTime={userTime}
+                        />
+                      )
+                    }
+                    if (message().role === "error") return <ErrorMessage message={message()} index={index} />
+                    return <SystemMessage message={message()} />
+                  }}
+                </Index>
+              </>
             )}
           </Show>
           <Show when={waiting()}>
@@ -736,6 +1024,37 @@ export function SessionScreen(props: SessionScreenProps) {
         </scrollbox>
 
         <box flexShrink={0}>
+          <Show when={props.subagentNavigation}>
+            {(navigation) => (
+              <box
+                paddingTop={1}
+                paddingBottom={1}
+                paddingLeft={2}
+                paddingRight={1}
+                borderColor={theme.border}
+                customBorderChars={SplitBorder.customBorderChars}
+                backgroundColor={theme.backgroundPanel}
+                ref={(value: BoxRenderable) => setBorder(value, ["left"], SplitBorder.customBorderChars)}
+              >
+                <box flexDirection="row" justifyContent="space-between" gap={1}>
+                  <box flexDirection="row" gap={1} alignItems="center">
+                    <text fg={theme.text}><b>{navigation().label || "Subagent"}</b></text>
+                    <Show when={navigation().total > 0}>
+                      <text fg={theme.textMuted}>({navigation().index} of {navigation().total})</text>
+                    </Show>
+                    <Show when={navigation().usage}>
+                      <text fg={theme.textMuted} wrapMode="none">{navigation().usage}</text>
+                    </Show>
+                  </box>
+                  <box flexDirection="row" gap={2}>
+                    <SubagentButton label="Parent" onTrigger={navigation().onParent} />
+                    <SubagentButton label="Prev" onTrigger={navigation().onPrevious} />
+                    <SubagentButton label="Next" onTrigger={navigation().onNext} />
+                  </box>
+                </box>
+              </box>
+            )}
+          </Show>
           <SessionDock screen={props} />
         </box>
       </box>
@@ -753,8 +1072,11 @@ export function SessionScreen(props: SessionScreenProps) {
               zIndex={1000}
               alignItems="flex-end"
               backgroundColor={RGBA.fromInts(0, 0, 0, 70)}
+              onMouseUp={() => props.onCloseSidebar?.()}
             >
-              <Sidebar session={props.session} cwd={props.cwd} cost={props.cost} />
+              <box onMouseUp={(event: any) => event.stopPropagation?.()}>
+                <Sidebar session={props.session} cwd={props.cwd} cost={props.cost} />
+              </box>
             </box>
           }
         >

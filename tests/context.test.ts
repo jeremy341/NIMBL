@@ -175,4 +175,26 @@ describe("context selection budget", () => {
     expect(result.items[0]?.path).toBe("feature.ts")
     second.close()
   })
+
+  it("keeps the event loop alive during the first index build so the UI spinner can animate", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-context-yield-"))
+    for (let index = 0; index < 200; index++) {
+      writeFileSync(join(root, `file${index}.ts`), `export function fn${index}() { return 'payload '.repeat(80) }\nimport { helper${index % 5} } from './helper${index % 5}'`)
+    }
+    for (let index = 0; index < 5; index++) {
+      writeFileSync(join(root, `helper${index}.ts`), `export function helper${index}() { return 'helper payload '.repeat(80) }`)
+    }
+    const index = createProjectContextIndex(root)
+    let ticks = 0
+    const timer = setInterval(() => ticks++, 5)
+    try {
+      await index.select("payload", 4, 100_000)
+    } finally {
+      clearInterval(timer)
+      index.close()
+    }
+    // With cooperative yields the timer fires during the build; a fully
+    // synchronous build would starve it entirely.
+    expect(ticks).toBeGreaterThan(0)
+  })
 })
