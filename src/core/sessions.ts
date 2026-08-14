@@ -141,6 +141,8 @@ export interface SessionStore {
   model: string
   sessions: StoredSession[]
   archived?: ArchivedSession[]
+  /** Transient overflow from applySessionRetention, backed up on save. */
+  archivedOverflow?: ArchivedSession[]
 }
 
 export interface ArchivedSession {
@@ -403,12 +405,35 @@ export function applySessionRetention(store: SessionStore, now = Date.now()): Se
     .sort((left, right) => (right.updated || right.created) - (left.updated || left.created))
   const keep = new Set(eligible.slice(0, MAX_ACTIVE_UNPINNED).filter((session) => now - (session.updated || session.created) <= RETENTION_AGE_MS).map((session) => session.id))
   const archivedNow = eligible.filter((session) => !keep.has(session.id)).map((session) => ({ session, archivedAt: now, reason: "retention" as const }))
-  if (!archivedNow.length) return store
+  const merged = [...(store.archived || []), ...archivedNow].sort((left, right) => right.archivedAt - left.archivedAt)
+  const overflow = merged.slice(MAX_ARCHIVED)
   return {
     ...store,
     sessions: store.sessions.filter((session) => protectedIDs.has(session.id) || keep.has(session.id)),
-    archived: [...(store.archived || []), ...archivedNow].sort((left, right) => right.archivedAt - left.archivedAt).slice(0, MAX_ARCHIVED),
+    archived: merged.slice(0, MAX_ARCHIVED),
+    archivedOverflow: overflow,
   }
+}
+
+/**
+ * Overflow beyond MAX_ARCHIVED is persisted to a dated backup file instead of
+ * being dropped, so old sessions are never silently lost. Only writes when the
+ * overflow set changes (avoids a growing backup file on every save).
+ */
+const overflowBackupCache = new Map<string, string>()
+
+export function backupArchivedOverflow(store: SessionStore, directory: string): number {
+  const overflow = store.archivedOverflow || []
+  if (!overflow.length) return 0
+  const fingerprint = overflow.map((entry) => entry.session.id).join(",")
+  const cached = overflowBackupCache.get(directory)
+  if (cached === fingerprint) return 0
+  const folder = join(directory, ".nimbl")
+  mkdirSync(folder, { recursive: true })
+  const file = join(folder, `sessions.archived-${new Date().toISOString().replace(/[:.]/g, "-")}.json`)
+  writeFileSync(file, JSON.stringify({ version: 1, archivedAt: Date.now(), sessions: overflow }, null, 2) + "\n", "utf8")
+  overflowBackupCache.set(directory, fingerprint)
+  return overflow.length
 }
 
 function processAlive(pid: number) {
@@ -490,6 +515,9 @@ export function saveSessionStore(directory: string, store: SessionStore, options
     const expected = options.expectedRevision ?? store.revision
     if (actualRevision !== expected) throw new SessionStoreConflictError(expected, actualRevision)
     const retained = applySessionRetention({ ...store, version: 2, revision: actualRevision + 1 }, options.now)
+    // Persist any archived-session overflow to a dated backup instead of
+    // silently dropping sessions older than the archived cap.
+    backupArchivedOverflow(retained, directory)
     if (currentValid) rotateBackups(file)
     const temporary = `${file}.tmp-${process.pid}-${randomUUID()}`
     writeFileSync(temporary, JSON.stringify(retained, null, 2) + "\n", "utf8")

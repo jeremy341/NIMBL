@@ -102,4 +102,17 @@ describe("assistant transcript parts", () => {
       { id: "done-tool", state: "completed", ended: 170 },
     ])
   })
+
+  it("marks running tools as failed when the assistant turn ends in error", () => {
+    const message: StoredMessage = {
+      id: "assistant",
+      role: "assistant",
+      text: "",
+      time: 100,
+      parts: [{ id: "running-tool", type: "tool", tool: "bash", state: "running", title: "Run command", started: 150 }],
+    }
+
+    const finished = finishAssistant(message, 300, true)
+    expect(finished.parts).toMatchObject([{ id: "running-tool", state: "failed", ended: 300 }])
+  })
 })

@@ -34,7 +34,10 @@ function readAttachment(root: string, path: string, startLine?: number, endLine?
 
 export function parseAttachmentReferences(text: string) {
   const results: { path: string; startLine?: number; endLine?: number }[] = []
-  const expression = /(^|\s)@(?:"([^"]+)"|([^\s]+?))(?:\:(\d+)(?:-(\d+))?)?(?=\s|$)/g
+  // Accept a whitespace/end boundary or trailing punctuation (,:;!?) so
+  // `@src/a.ts,` and `@src/a.ts?` still attach. `.` is intentionally not a
+  // boundary since it is part of file paths (e.g. `@notes.md`).
+  const expression = /(^|\s)@(?:"([^"]+)"|([^\s]+?))(?::(\d+)(?:-(\d+))?)?(?=[\s,;:!?)\]}]|$)/g
   for (const match of text.matchAll(expression)) { const path = (match[2] || match[3] || "").replace(/^@/, ""); if (path && !path.startsWith("http")) results.push({ path, startLine: match[4] ? Number(match[4]) : undefined, endLine: match[5] ? Number(match[5]) : undefined }) }
   return results.slice(0, 8)
 }

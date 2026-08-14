@@ -10,7 +10,7 @@ import { SessionPrompt } from "./prompt"
 import { Sidebar } from "./sidebar"
 import { Spinner } from "./spinner"
 import { agentColor, theme } from "./theme"
-import type { AgentMode, AssistantPart, ChatMessage, ChatSession, CommandOption, SessionPromptRef } from "./types"
+import type { AgentMode, AssistantPart, ChatMessage, ChatSession, CommandOption, SessionPromptRef, SubagentActivity } from "./types"
 
 type ToolPart = Extract<AssistantPart, { type: "tool" }>
 type TextPart = Extract<AssistantPart, { type: "text" }>
@@ -41,13 +41,15 @@ export interface SessionScreenProps {
   contextText?: string
   cost?: number
   pendingApproval?: { title: string; detail: string; diff?: string; tool?: string }
-  onApproval?(choice: "once" | "always" | "reject"): void
+  onApproval?(choice: "once" | "always" | "reject" | { reject: string }): void
   onRejectWithMessage?(message: string): void
   pendingQuestion?: { prompt: string; options: string[]; freeform?: boolean }
   onQuestion?(answer: string): void
   promptRef?: (value: SessionPromptRef | undefined) => void
   subagentNavigation?: { index: number; total: number; parentTitle: string; label?: string; usage?: string; onParent(): void; onPrevious(): void; onNext(): void }
-  onSubagentClick?: () => void
+  subagentActivity?: Record<string, SubagentActivity>
+  pendingApprovalToolID?: string
+  onSubagentClick?: (sessionID?: string) => void
   conceal?: boolean
   thinkingMode?: "show" | "hide"
   showTimestamps?: boolean
@@ -62,7 +64,7 @@ function titlecase(value: string): string {
 }
 
 // opencode-parity duration: ms → 1.5s → 1m 2s → 1h 2m → 1d 2h
-function duration(milliseconds: number): string {
+export function duration(milliseconds: number): string {
   if (milliseconds < 1_000) return `${Math.max(0, Math.round(milliseconds))}ms`
   if (milliseconds < 60_000) return `${(milliseconds / 1_000).toFixed(1)}s`
   if (milliseconds < 3_600_000) {
@@ -126,7 +128,7 @@ function hasSelection(renderer: ReturnType<typeof useRenderer>): boolean {
   return Boolean(renderer.getSelection()?.getSelectedText())
 }
 
-function SubagentButton(props: { label: string; onTrigger: () => void }) {
+function SubagentButton(props: { label: string; shortcut?: string; onTrigger: () => void }) {
   const renderer = useRenderer()
   const [hover, setHover] = createSignal(false)
   return (
@@ -138,7 +140,12 @@ function SubagentButton(props: { label: string; onTrigger: () => void }) {
       onMouseOut={() => setHover(false)}
       onMouseUp={() => { if (hasSelection(renderer)) return; props.onTrigger() }}
     >
-      <text fg={hover() ? theme.text : theme.textMuted}>{props.label}</text>
+      <text fg={hover() ? theme.text : theme.textMuted}>
+        {props.label}
+        <Show when={props.shortcut}>
+          <span style={{ fg: theme.textMuted }}> {props.shortcut}</span>
+        </Show>
+      </text>
     </box>
   )
 }
@@ -175,6 +182,7 @@ export interface InlineToolProps {
   children: JSX.Element
   iconColor?: string
   separate?: boolean
+  pendingApprovalToolID?: string
 }
 
 export function InlineTool(props: InlineToolProps) {
@@ -182,7 +190,8 @@ export function InlineTool(props: InlineToolProps) {
   const failed = () => props.part.state === "failed"
   const rejected = () => props.part.state === "rejected"
   const running = () => props.part.state === "running"
-  const color = () => (failed() ? theme.error : running() ? theme.text : theme.textMuted)
+  const pendingApproval = () => running() && props.pendingApprovalToolID !== undefined && props.pendingApprovalToolID === props.part.id
+  const color = () => (failed() ? theme.error : pendingApproval() ? theme.warning : running() ? theme.text : theme.textMuted)
   const clickable = () => failed() && Boolean(props.part.detail || props.part.output)
 
   return (
@@ -369,7 +378,7 @@ function parseTodoOutput(output: string | undefined): { status: string; content:
   })
 }
 
-function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: () => void }) {
+function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: (sessionID?: string) => void; activity?: SubagentActivity; pendingApprovalToolID?: string }) {
   const tool = createMemo(() => canonicalTool(props.part.tool))
   const output = () => props.part.output?.trim()
 
@@ -388,7 +397,7 @@ function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: 
             )
           }
           return (
-            <InlineTool part={props.part} icon="$" pending="Writing command...">
+            <InlineTool part={props.part} pendingApprovalToolID={props.pendingApprovalToolID} icon="$" pending="Writing command...">
               {props.part.detail ?? props.part.title}
             </InlineTool>
           )
@@ -397,7 +406,7 @@ function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: 
         if (name === "read") {
           const loaded = props.part.state === "completed" && props.part.path ? `↳ Loaded ${props.part.path}` : undefined
           return (
-            <InlineTool part={props.part} icon="→" pending="Reading file...">
+            <InlineTool part={props.part} pendingApprovalToolID={props.pendingApprovalToolID} icon="→" pending="Reading file...">
               {toolText(props.part, "Read")}
               <Show when={loaded}>
                 <text fg={theme.textMuted}>{loaded}</text>
@@ -409,7 +418,7 @@ function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: 
         if (name === "glob") {
           const count = countLines(output())
           return (
-            <InlineTool part={props.part} icon="✱" pending="Finding files...">
+            <InlineTool part={props.part} pendingApprovalToolID={props.pendingApprovalToolID} icon="✱" pending="Finding files...">
               {toolText(props.part, "Glob")}
               <Show when={count !== undefined}>
                 <span style={{ fg: theme.textMuted }}> ({count} {plural(count!, "match")})</span>
@@ -421,7 +430,7 @@ function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: 
         if (name === "grep") {
           const count = countLines(output())
           return (
-            <InlineTool part={props.part} icon="✱" pending="Searching content...">
+            <InlineTool part={props.part} pendingApprovalToolID={props.pendingApprovalToolID} icon="✱" pending="Searching content...">
               {toolText(props.part, "Grep")}
               <Show when={count !== undefined}>
                 <span style={{ fg: theme.textMuted }}> ({count} {plural(count!, "match")})</span>
@@ -443,7 +452,7 @@ function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: 
             )
           }
           return (
-            <InlineTool part={props.part} icon="←" pending="Preparing write...">
+            <InlineTool part={props.part} pendingApprovalToolID={props.pendingApprovalToolID} icon="←" pending="Preparing write...">
               {toolText(props.part, "Write")}
             </InlineTool>
           )
@@ -463,7 +472,7 @@ function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: 
             )
           }
           return (
-            <InlineTool part={props.part} icon={name === "edit" ? "←" : "%"} pending={name === "edit" ? "Preparing edit..." : "Preparing patch..."}>
+            <InlineTool part={props.part} pendingApprovalToolID={props.pendingApprovalToolID} icon={name === "edit" ? "←" : "%"} pending={name === "edit" ? "Preparing edit..." : "Preparing patch..."}>
               {toolText(props.part, name === "edit" ? "Edit" : "Patch")}
             </InlineTool>
           )
@@ -471,7 +480,7 @@ function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: 
 
         if (name === "webfetch") {
           return (
-            <InlineTool part={props.part} icon="%" pending="Fetching from the web...">
+            <InlineTool part={props.part} pendingApprovalToolID={props.pendingApprovalToolID} icon="%" pending="Fetching from the web...">
               {toolText(props.part, "WebFetch")}
             </InlineTool>
           )
@@ -480,7 +489,7 @@ function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: 
         if (name === "websearch") {
           const count = countLines(output())
           return (
-            <InlineTool part={props.part} icon="◈" pending="Searching web...">
+            <InlineTool part={props.part} pendingApprovalToolID={props.pendingApprovalToolID} icon="◈" pending="Searching web...">
               {toolText(props.part, "WebSearch")}
               <Show when={count !== undefined}>
                 <span style={{ fg: theme.textMuted }}> ({count} {plural(count!, "result")})</span>
@@ -499,7 +508,7 @@ function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: 
             )
           }
           return (
-            <InlineTool part={props.part} icon="⚙" pending="Updating todos...">
+            <InlineTool part={props.part} pendingApprovalToolID={props.pendingApprovalToolID} icon="⚙" pending="Updating todos...">
               Updating todos...
             </InlineTool>
           )
@@ -514,7 +523,7 @@ function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: 
             )
           }
           return (
-            <InlineTool part={props.part} icon="→" pending="Asking questions...">
+            <InlineTool part={props.part} pendingApprovalToolID={props.pendingApprovalToolID} icon="→" pending="Asking questions...">
               {props.part.title}
             </InlineTool>
           )
@@ -522,7 +531,7 @@ function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: 
 
         if (name === "skill") {
           return (
-            <InlineTool part={props.part} icon="→" pending="Loading skill...">
+            <InlineTool part={props.part} pendingApprovalToolID={props.pendingApprovalToolID} icon="→" pending="Loading skill...">
               {toolText(props.part, "Skill")}
             </InlineTool>
           )
@@ -532,22 +541,41 @@ function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: 
           const running = props.part.state === "running"
           const detail = props.part.detail || props.part.title
           const title = `Subagent Task — ${detail}`
+          const activity = props.activity
           const partDuration = props.part.started !== undefined && props.part.ended !== undefined
             ? duration(Math.max(0, props.part.ended - props.part.started))
             : undefined
+          const activityDuration = activity?.duration ?? partDuration
+          const toolCount = activity?.toolcalls ?? 0
+          const childID = props.part.id
           return (
             <BlockTool
               part={props.part}
               collapsible
-              initialExpanded={running}
-              onClick={props.onSubagentClick}
+              initialExpanded={running || toolCount > 0 || Boolean(output())}
+              onClick={() => props.onSubagentClick?.(childID)}
+              onHeaderClick={() => props.onSubagentClick?.(childID)}
               title={"# " + title}
             >
-              <box gap={1} onMouseUp={(event: any) => { event.stopPropagation?.(); props.onSubagentClick?.() }}>
+              <box gap={1} onMouseUp={(event: any) => { event.stopPropagation?.(); props.onSubagentClick?.(childID) }}>
                 <text fg={theme.textMuted}>
                   {title}
-                  <Show when={partDuration && !running}>
-                    <span style={{ fg: theme.textMuted }}> · {partDuration}</span>
+                  <Show when={activity?.retrying}>
+                    {(retrying) => (
+                      <span style={{ fg: theme.error }}> ↳ Retrying (attempt {retrying().attempt}) · {retrying().message.length > 80 ? retrying().message.slice(0, 80) + "…" : retrying().message}</span>
+                    )}
+                  </Show>
+                  <Show when={running && activity?.current && activity.current.title}>
+                    <span style={{ fg: theme.textMuted }}> ↳ {activity!.current!.tool} {activity!.current!.title}</span>
+                  </Show>
+                  <Show when={running && !activity?.current && toolCount > 0}>
+                    <span style={{ fg: theme.textMuted }}> ↳ {toolCount} toolcall{toolCount === 1 ? "" : "s"}</span>
+                  </Show>
+                  <Show when={!running && toolCount > 0}>
+                    <span style={{ fg: theme.textMuted }}> · {toolCount} toolcall{toolCount === 1 ? "" : "s"}</span>
+                  </Show>
+                  <Show when={activityDuration}>
+                    <span style={{ fg: theme.textMuted }}> · {activityDuration}</span>
                   </Show>
                 </text>
                 <Show when={output() && (props.part.state === "failed" || props.part.state === "completed")}>
@@ -567,7 +595,7 @@ function ToolPartView(props: { part: ToolPart; width: number; onSubagentClick?: 
         }
 
         return (
-          <InlineTool part={props.part} icon="⚙" pending="Running tool...">
+          <InlineTool part={props.part} pendingApprovalToolID={props.pendingApprovalToolID} icon="⚙" pending="Running tool...">
             {props.part.tool} {props.part.title}
           </InlineTool>
         )
@@ -747,7 +775,7 @@ function UserMessage(props: {
   )
 }
 
-function AssistantMessage(props: { message: ChatMessage; fallbackAgent: AgentMode; fallbackModel: string; width: number; onSubagentClick?: () => void; conceal?: boolean; thinkingMode?: "show" | "hide"; last?: boolean; userTime?: number }) {
+function AssistantMessage(props: { message: ChatMessage; fallbackAgent: AgentMode; fallbackModel: string; width: number; onSubagentClick?: (sessionID?: string) => void; conceal?: boolean; thinkingMode?: "show" | "hide"; last?: boolean; userTime?: number; subagentActivity?: Record<string, SubagentActivity>; pendingApprovalToolID?: string }) {
   const parts = createMemo<AssistantPart[]>(() => {
     if (props.message.parts?.length) return props.message.parts
     if (!props.message.text) return []
@@ -769,7 +797,7 @@ function AssistantMessage(props: { message: ChatMessage; fallbackAgent: AgentMod
         {(part) => {
           if (part().type === "text") return <AssistantTextPart text={(part() as TextPart).text} conceal={props.conceal} />
           if (part().type === "reasoning") return <ReasoningPartView part={part() as ReasoningPart} thinkingMode={props.thinkingMode ?? (props.conceal ? "hide" : "show")} />
-          return <ToolPartView part={part() as ToolPart} width={props.width} onSubagentClick={props.onSubagentClick} />
+          return <ToolPartView part={part() as ToolPart} width={props.width} onSubagentClick={props.onSubagentClick} activity={props.subagentActivity?.[(part() as ToolPart).id]} pendingApprovalToolID={props.pendingApprovalToolID} />
         }}
       </Index>
       <Show when={hasSubagents() && props.message.completed !== undefined}>
@@ -778,8 +806,7 @@ function AssistantMessage(props: { message: ChatMessage; fallbackAgent: AgentMod
             <span style={{ fg: theme.primary }}>view</span> <span style={{ fg: theme.textMuted }}>subagents</span>
           </text>
         </box>
-      </Show>
-      <Show when={props.message.error}>
+      </Show>      <Show when={props.message.error}>
         {(error) => (
           <box
             paddingTop={1}
@@ -1006,6 +1033,8 @@ export function SessionScreen(props: SessionScreenProps) {
                           thinkingMode={props.thinkingMode}
                           last={index === visibleMessages().length - 1}
                           userTime={userTime}
+                          subagentActivity={props.subagentActivity}
+                          pendingApprovalToolID={props.pendingApprovalToolID}
                         />
                       )
                     }
@@ -1047,9 +1076,9 @@ export function SessionScreen(props: SessionScreenProps) {
                     </Show>
                   </box>
                   <box flexDirection="row" gap={2}>
-                    <SubagentButton label="Parent" onTrigger={navigation().onParent} />
-                    <SubagentButton label="Prev" onTrigger={navigation().onPrevious} />
-                    <SubagentButton label="Next" onTrigger={navigation().onNext} />
+                    <SubagentButton label="Parent" shortcut="↑" onTrigger={navigation().onParent} />
+                    <SubagentButton label="Prev" shortcut="←" onTrigger={navigation().onPrevious} />
+                    <SubagentButton label="Next" shortcut="→" onTrigger={navigation().onNext} />
                   </box>
                 </box>
               </box>

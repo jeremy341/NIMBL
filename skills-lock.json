@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "qa-resilience": {
+      "source": "vasilyu1983/ai-agents-public",
+      "sourceType": "github",
+      "skillPath": "frameworks/shared-skills/skills/qa-resilience/SKILL.md",
+      "computedHash": "debab1760b95ba0b5001f0f6654256a89dc38162c437d6e6cb1dc1ed2d1a77a6"
+    }
+  }
+}

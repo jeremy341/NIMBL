@@ -36,6 +36,8 @@ const PERMISSION_INFO: Record<string, { icon: string; label: string }> = {
   question: { icon: "→", label: "Question" },
   todowrite: { icon: "⚙", label: "Todos" },
   delegate: { icon: "│", label: "Delegate task" },
+  external_directory: { icon: "←", label: "Access external directory" },
+  doom_loop: { icon: "⟳", label: "Continue after repeated failures" },
 }
 
 export function PermissionPrompt(props: PermissionPromptProps) {

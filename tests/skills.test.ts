@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
-import { availableSkillGuidance, canonicalSkillFile, discoverSkills, globalSkillsDir, listSkillFiles, loadSkill, parseSkillFrontmatter } from "@/core/skills"
+import { availableSkillGuidance, canonicalSkillFile, discoverSkills, globalSkillsDir, listSkillFiles, loadSkill, parseSkillFrontmatter, syncRemoteSkills } from "@/core/skills"
 
 describe("skills", () => {
   it("parses name, description, and body from frontmatter", () => {
@@ -107,5 +107,21 @@ describe("skills", () => {
         try { require("node:fs").rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
       }
     }
+  })
+
+  it("syncs remote skills from an index.json manifest", async () => {
+    const manifest = { skills: [{ name: "remote-skill", files: ["scripts/run.sh"] }] }
+    const fetcher = async (url: string) => {
+      if (url.endsWith("/index.json")) return new Response(JSON.stringify(manifest), { status: 200 })
+      if (url.endsWith("/SKILL.md")) return new Response("---\ndescription: Remote skill\n---\nremote body", { status: 200 })
+      if (url.endsWith("/scripts/run.sh")) return new Response("echo remote", { status: 200 })
+      return new Response("", { status: 404 })
+    }
+    const summaries = await syncRemoteSkills({ skills: { paths: [], urls: ["https://example.invalid/skills"] } }, { fetcher: fetcher as typeof fetch })
+
+    expect(summaries.length).toBe(1)
+    expect(summaries[0]!.name).toBe("remote-skill")
+    expect(summaries[0]!.description).toBe("Remote skill")
+    expect(existsSync(join(summaries[0]!.directory, "scripts", "run.sh"))).toBe(true)
   })
 })

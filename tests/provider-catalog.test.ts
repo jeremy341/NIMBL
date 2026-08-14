@@ -100,4 +100,51 @@ describe("opencode provider catalog fixes", () => {
     expect(modelsDevKey("opencode-go")).toBe("opencode-go")
     expect(modelsDevKey("openai")).toBe("openai")
   })
+
+  it("merges the live feed over the static catalog instead of replacing it", () => {
+    applyLiveCatalog({
+      "opencode-go": {
+        models: {
+          "deepseek-v4-flash": { name: "Live DeepSeek V4 Flash", cost: { input: 0.07, output: 0.14 }, limit: { context: 1_000_000, output: 384_000 }, modalities: { input: ["text"], output: ["text"] } },
+        },
+      },
+    })
+    const go = getProvider("opencode-go")
+    // The live entry updates the matched static model.
+    const flash = go.models.find((model) => model.id === "deepseek-v4-flash")
+    expect(flash?.name).toBe("Live DeepSeek V4 Flash")
+    // Static models the feed omits must survive (previously they were dropped).
+    const pro = go.models.find((model) => model.id === "deepseek-v4-pro")
+    expect(pro).toBeDefined()
+    const kimi = go.models.find((model) => model.id === "kimi-k2.7-code")
+    expect(kimi).toBeDefined()
+  })
+
+  it("registers a runtime custom provider from env vars", () => {
+    const previous = {
+      provider: process.env.NIMBL_CUSTOM_PROVIDER,
+      baseURL: process.env.NIMBL_CUSTOM_BASE_URL,
+      model: process.env.NIMBL_CUSTOM_MODEL,
+      key: process.env.NIMBL_CUSTOM_API_KEY,
+    }
+    process.env.NIMBL_CUSTOM_PROVIDER = "custom"
+    process.env.NIMBL_CUSTOM_BASE_URL = "https://example.com/v1"
+    process.env.NIMBL_CUSTOM_MODEL = "test-model"
+    process.env.NIMBL_CUSTOM_API_KEY = "test-key"
+    try {
+      const provider = getProvider("custom")
+      expect(provider.baseURL).toBe("https://example.com/v1")
+      expect(provider.models[0]?.id).toBe("test-model")
+      expect(providerApiKey("custom")).toBe("test-key")
+    } finally {
+      if (previous.provider === undefined) delete process.env.NIMBL_CUSTOM_PROVIDER
+      else process.env.NIMBL_CUSTOM_PROVIDER = previous.provider
+      if (previous.baseURL === undefined) delete process.env.NIMBL_CUSTOM_BASE_URL
+      else process.env.NIMBL_CUSTOM_BASE_URL = previous.baseURL
+      if (previous.model === undefined) delete process.env.NIMBL_CUSTOM_MODEL
+      else process.env.NIMBL_CUSTOM_MODEL = previous.model
+      if (previous.key === undefined) delete process.env.NIMBL_CUSTOM_API_KEY
+      else process.env.NIMBL_CUSTOM_API_KEY = previous.key
+    }
+  })
 })

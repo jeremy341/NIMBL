@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import type { NimblSettings } from "./settings"
@@ -56,7 +56,65 @@ function configSkillDirectories(settings?: NimblSettings): string[] {
 }
 
 export function skillDirectories(root: string, settings?: NimblSettings): string[] {
-  return [projectSkillsDir(root), globalSkillsDir(), ...configSkillDirectories(settings)]
+  return [projectSkillsDir(root), globalSkillsDir(), ...configSkillDirectories(settings), remoteSkillsCacheDir()]
+}
+
+export function remoteSkillsCacheDir(): string {
+  const base = process.platform === "win32"
+    ? process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local")
+    : process.env.XDG_CACHE_HOME || join(homedir(), ".cache")
+  return join(base, "nimbl", "skills-remote")
+}
+
+interface RemoteSkillIndex {
+  skills?: Array<{ name: string; files?: string[]; version?: string }>
+}
+
+function sanitizeRemoteSlug(url: string): string {
+  return url.replace(/^https?:\/\//i, "").replace(/[^a-z0-9._-]/gi, "_").slice(0, 80)
+}
+
+export async function syncRemoteSkills(settings?: Pick<NimblSettings, "skills">, options?: { fetcher?: typeof fetch; signal?: AbortSignal }): Promise<SkillSummary[]> {
+  const urls = settings?.skills?.urls ?? []
+  if (!urls.length) return []
+  const fetcher = options?.fetcher ?? fetch
+  const summaries: SkillSummary[] = []
+  const seen = new Set<string>()
+  for (const raw of urls) {
+    const url = raw.trim()
+    if (!/^https?:\/\//i.test(url)) continue
+    const cacheRoot = join(remoteSkillsCacheDir(), sanitizeRemoteSlug(url))
+    try {
+      const response = await fetcher(`${url}/index.json`, { signal: options?.signal })
+      if (!response.ok) continue
+      const index = (await response.json()) as RemoteSkillIndex
+      for (const skill of index.skills ?? []) {
+        const name = skill.name
+        if (!/^[a-z0-9][a-z0-9_-]*$/i.test(name) || seen.has(name)) continue
+        seen.add(name)
+        const directory = join(cacheRoot, name)
+        mkdirSync(directory, { recursive: true })
+        const file = join(directory, "SKILL.md")
+        const body = await fetcher(`${url}/${name}/SKILL.md`, { signal: options?.signal })
+        if (!body.ok) continue
+        writeFileSync(file, await body.text(), "utf8")
+        for (const relative of skill.files ?? []) {
+          const safe = relative.replace(/\\/g, "/").split("/").filter((part) => part !== ".." && part !== ".").join("/")
+          if (!safe || safe === "SKILL.md") continue
+          const target = join(directory, safe)
+          if (!target.startsWith(directory)) continue
+          mkdirSync(dirname(target), { recursive: true })
+          const item = await fetcher(`${url}/${name}/${safe}`, { signal: options?.signal })
+          if (item.ok) writeFileSync(target, await item.text(), "utf8")
+        }
+        const parsed = parseSkillFrontmatter(readFileSync(file, "utf8"))
+        summaries.push({ name, description: parsed.description, location: file, directory, source: "config" })
+      }
+    } catch {
+      // Remote skill sync failures degrade silently; local skills still work.
+    }
+  }
+  return summaries
 }
 
 export function canonicalSkillFile(root: string, name: string, settings?: NimblSettings): { file: string; source: "project" | "global" | "config" } {
@@ -67,6 +125,10 @@ export function canonicalSkillFile(root: string, name: string, settings?: NimblS
   if (existsSync(projectTarget.full)) return { file: projectTarget.full, source: "project" }
   const globalFile = join(globalSkillsDir(), name, "SKILL.md")
   if (existsSync(globalFile)) return { file: globalFile, source: "global" }
+  for (const slug of readdirSyncSafe(remoteSkillsCacheDir())) {
+    const remoteFile = join(remoteSkillsCacheDir(), slug, name, "SKILL.md")
+    if (existsSync(remoteFile)) return { file: remoteFile, source: "config" }
+  }
   for (const directory of configSkillDirectories(settings)) {
     const file = join(directory, name, "SKILL.md")
     if (existsSync(file)) return { file, source: "config" }
@@ -99,25 +161,42 @@ export function listSkillFiles(directory: string, limit = 20): string[] {
 export function discoverSkills(root: string, settings?: NimblSettings): SkillSummary[] {
   const result: SkillSummary[] = []
   const seen = new Set<string>()
+  const remoteRoot = remoteSkillsCacheDir()
   for (const directory of skillDirectories(root, settings)) {
-    let entries
-    try {
-      entries = readdirSync(directory, { withFileTypes: true })
-    } catch {
-      continue
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || seen.has(entry.name)) continue
-      if (!/^[a-z0-9][a-z0-9_-]*$/i.test(entry.name)) continue
-      const file = join(directory, entry.name, "SKILL.md")
-      if (!existsSync(file)) continue
-      seen.add(entry.name)
-      const source = directory === projectSkillsDir(root) ? "project" : directory === globalSkillsDir() ? "global" : "config"
-      const parsed = parseSkillFrontmatter(readFileSync(file, "utf8"))
-      result.push({ name: entry.name, description: parsed.description, location: file, directory, source })
+    const isRemoteRoot = directory === remoteRoot
+    const roots = isRemoteRoot
+      ? readdirSyncSafe(remoteRoot).map((slug) => join(remoteRoot, slug))
+      : [directory]
+    for (const rootDir of roots) {
+      let entries
+      try {
+        entries = readdirSync(rootDir, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory() || seen.has(entry.name)) continue
+        if (!/^[a-z0-9][a-z0-9_-]*$/i.test(entry.name)) continue
+        const file = join(rootDir, entry.name, "SKILL.md")
+        if (!existsSync(file)) continue
+        seen.add(entry.name)
+        const source = isRemoteRoot
+          ? "config"
+          : rootDir === projectSkillsDir(root)
+            ? "project"
+            : rootDir === globalSkillsDir()
+              ? "global"
+              : "config"
+        const parsed = parseSkillFrontmatter(readFileSync(file, "utf8"))
+        result.push({ name: entry.name, description: parsed.description, location: file, directory: rootDir, source })
+      }
     }
   }
   return result.sort((left, right) => left.name.localeCompare(right.name))
+}
+
+function readdirSyncSafe(directory: string): string[] {
+  try { return readdirSync(directory) } catch { return [] }
 }
 
 export function loadSkill(root: string, name: string, settings?: NimblSettings): SkillLoadResult {

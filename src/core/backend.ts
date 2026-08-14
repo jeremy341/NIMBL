@@ -17,7 +17,8 @@ import {
 } from "./sessions"
 import { findSession, latestSession } from "./session-lifecycle"
 import { defaultModelFor, modelContextWindow, type ProviderDefinition } from "./providers"
-import { runAgent, type AgentMessage, type AgentRunOptions, type AgentRunResult } from "./agent"
+import { runAgent, type AgentEvent, type AgentMessage, type AgentRunOptions, type AgentRunResult } from "./agent"
+import { reduceAssistantEvents } from "./transcript"
 import { effectiveAgent, effectivePermissions, type AgentConfigInput, type AgentDefinition } from "./agent-config"
 import { exportSession, writeSessionExport, type ExportOptions } from "./export"
 import { NotificationCenter } from "./notifications"
@@ -31,6 +32,7 @@ import { loadProjectConfig, validateSettings, watchProjectConfig, type ConfigDia
 import { getProvider, PROVIDERS } from "./providers"
 import { captureFilesystemSnapshot, restoreFilesystemSnapshot, type FilesystemSnapshot } from "./filesystem-snapshot"
 import { createHostedShare, deleteHostedShare } from "./share"
+import { syncRemoteSkills } from "./skills"
 
 export interface BackendWorkspace {
   root: string
@@ -83,6 +85,7 @@ export class NimblBackend {
   readonly workspaceManager: WorkspaceManager
   readonly checkpoints: GitCheckpointManager
   readonly auth = new AuthRegistry()
+  settings: NimblSettings
 
   constructor(root: string, options: { watch?: boolean; hybrid?: boolean; graph?: boolean } = {}) {
     this.root = root
@@ -97,6 +100,13 @@ export class NimblBackend {
     this.contextIndex = createProjectContextIndex(root, { watch: options.watch ?? true, hybrid: options.hybrid, graph: options.graph })
     this.workspaceManager = new WorkspaceManager(root)
     this.checkpoints = new GitCheckpointManager(root)
+    this.settings = loadSettings(root)
+    if (this.settings.skills?.urls?.length) void syncRemoteSkills(this.settings)
+  }
+
+  syncRemoteSkillRegistries() {
+    if (this.settings.skills?.urls?.length) return syncRemoteSkills(this.settings)
+    return Promise.resolve([])
   }
 
   close() {
@@ -210,11 +220,30 @@ export class NimblBackend {
     let depth = 0; let cursor: StoredSession | undefined = parent; while (cursor?.parentID) { depth += 1; cursor = store.sessions.find((session) => session.id === cursor!.parentID) }
     if (depth >= (options.maxDepth ?? 3)) throw new Error("Subagent delegation depth limit reached.")
     const child = this.createChildSession(store, parentSessionID, options.mode)
-    // Delegated agents are not capped by an aggregate NIMBL token budget. The
-    // provider's context/output window and the step/depth guards remain active.
-    const task = this.createTask({ sessionID: child.id, parentTaskID: options.runID, kind: "subagent", budget: { maxTokens: Number.POSITIVE_INFINITY, maxSteps: options.maxToolSteps } })
-    const result = await this.runTask({ ...options, taskID: task.id, parentTaskID: options.runID, messages: options.messages, runID: task.id, maxTokens: undefined })
-    return { child, task: this.tasks.get(task.id), result }
+    // Persist the child's conversation so it can be reopened later.
+    const userMessage: StoredMessage = { id: crypto.randomUUID(), role: "user", text: options.messages.at(-1)?.text || "", time: Date.now() }
+    const assistantMessage: StoredMessage = { id: crypto.randomUUID(), role: "assistant", text: "", time: Date.now(), provider: options.provider, model: options.model, parts: [] }
+    const indexed = store.sessions.findIndex((session) => session.id === child.id)
+    store.sessions[indexed] = { ...store.sessions[indexed]!, messages: [userMessage, assistantMessage], runState: "running" as const, updated: Date.now() }
+    const events: AgentEvent[] = []
+    try {
+      // Delegated agents are not capped by an aggregate NIMBL token budget. The
+      // provider's context/output window and the step/depth guards remain active.
+      const task = this.createTask({ sessionID: child.id, parentTaskID: options.runID, kind: "subagent", budget: { maxTokens: Number.POSITIVE_INFINITY, maxSteps: options.maxToolSteps } })
+      const result = await this.runTask({ ...options, taskID: task.id, parentTaskID: options.runID, messages: options.messages, runID: task.id, maxTokens: undefined, onEvent: (event) => events.push(event) })
+      store.sessions[indexed] = {
+        ...store.sessions[indexed]!,
+        runState: "idle" as const,
+        updated: Date.now(),
+        messages: store.sessions[indexed]!.messages.map((message) => message.id === assistantMessage.id
+          ? reduceAssistantEvents({ ...message, text: message.text || result.text }, events, () => crypto.randomUUID())
+          : message),
+      }
+      return { child, task: this.tasks.get(task.id), result }
+    } catch (error) {
+      store.sessions[indexed] = { ...store.sessions[indexed]!, runState: "failed" as const, updated: Date.now(), messages: store.sessions[indexed]!.messages.map((message) => message.id === assistantMessage.id ? { ...message, error: error instanceof Error ? error.message : String(error) } : message) }
+      throw error
+    }
   }
 
   children(store: SessionStore, parentID: string) {

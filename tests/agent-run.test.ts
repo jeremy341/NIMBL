@@ -198,6 +198,35 @@ describe("agent execution", () => {
     expect(result.text).toContain("approved content")
   })
 
+  it("feeds a rejection message back to the model", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-rejectmsg-"))
+    writeFileSync(join(root, "note.txt"), "approved content")
+    const requestApproval = vi.fn(async () => ({ reject: "Use a different file" }) as const)
+    streamText.mockImplementationOnce((config: any) => ({
+      fullStream: {
+        async *[Symbol.asyncIterator]() {
+          const output = await config.tools.read.execute({ path: "note.txt" })
+          yield { type: "text-delta", text: output }
+        },
+      },
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    }))
+
+    const result = await runAgent({
+      root,
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "build",
+      messages: [{ role: "user", text: "read note" }],
+      permissions: { read: "ask", "*": "allow" },
+      requestApproval,
+      onEvent: () => {},
+    })
+
+    expect(result.text).toContain("Use a different file")
+  })
+
   it("blocks environment-file writes before requesting approval", async () => {
     const root = mkdtempSync(join(tmpdir(), "nimbl-agent-env-"))
     const requestApproval = vi.fn(async () => "once" as const)
@@ -300,7 +329,7 @@ describe("agent execution", () => {
       apiKey: "test-key",
       mode: "build",
       messages: [{ role: "user", text: "inspect files" }],
-      permissions: { "*": "allow" },
+      permissions: { "*": "allow", external_directory: "deny" },
       requestApproval,
       onEvent: () => {},
     })
@@ -314,10 +343,174 @@ describe("agent execution", () => {
     expect(globOutput).not.toContain(".nimbl")
     expect(result.text).toContain("safe skill")
     expect(result.text.match(/blocked by NIMBL's default safety policy/g)).toHaveLength(4)
-    expect(result.text.match(/outside this project/g)).toHaveLength(4)
+    expect(result.text.match(/outside this project/g)).toHaveLength(1)
+    expect(result.text.match(/blocked by project policy/g)).toHaveLength(3)
     expect(result.text).toContain("canonical project skill file")
     expect(readFileSync(join(root, ".npmrc"), "utf8")).toBe("secret-token")
     expect(existsSync(join(root, "escaped.txt"))).toBe(false)
     expect(requestApproval).not.toHaveBeenCalled()
+  })
+
+  it("asks for external_directory permission before reading outside the project", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-ext-"))
+    const outside = mkdtempSync(join(tmpdir(), "nimbl-agent-outside-"))
+    writeFileSync(join(outside, "notes.txt"), "outside content")
+    const requestApproval = vi.fn(async () => "once" as const)
+
+    streamText.mockImplementationOnce((config: any) => ({
+      fullStream: {
+        async *[Symbol.asyncIterator]() {
+          const output = await config.tools.read.execute({ path: join(outside, "notes.txt") })
+          yield { type: "text-delta", text: output }
+        },
+      },
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    }))
+
+    const result = await runAgent({
+      root,
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "build",
+      messages: [{ role: "user", text: "read notes" }],
+      permissions: { "*": "allow" },
+      requestApproval,
+      onEvent: () => {},
+    })
+
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ tool: "external_directory", target: outside }))
+    expect(result.text).toContain("outside content")
+  })
+
+  it("rejects external_directory reads when the user rejects the prompt", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-extrej-"))
+    const outside = mkdtempSync(join(tmpdir(), "nimbl-agent-outsiderej-"))
+    writeFileSync(join(outside, "notes.txt"), "outside content")
+    const requestApproval = vi.fn(async () => "reject" as const)
+
+    streamText.mockImplementationOnce((config: any) => ({
+      fullStream: {
+        async *[Symbol.asyncIterator]() {
+          const output = await config.tools.read.execute({ path: join(outside, "notes.txt") })
+          yield { type: "text-delta", text: output }
+        },
+      },
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    }))
+
+    const result = await runAgent({
+      root,
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "build",
+      messages: [{ role: "user", text: "read notes" }],
+      permissions: { "*": "allow" },
+      requestApproval,
+      onEvent: () => {},
+    })
+
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ tool: "external_directory", target: outside }))
+    expect(result.text).toContain("rejected access")
+  })
+
+  it("asks the user before continuing past a repeated tool call", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-doom-"))
+    const requestApproval = vi.fn(async () => "once" as const)
+    const taskEvents: string[] = []
+
+    streamText.mockImplementationOnce((config: any) => ({
+      fullStream: {
+        async *[Symbol.asyncIterator]() {
+          for (let i = 0; i < 2; i++) {
+            yield { type: "tool-call", toolName: "read", input: { path: "note.txt" }, toolCallId: `call-${i}` }
+          }
+          yield { type: "text-delta", text: "done" }
+        },
+      },
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    }))
+
+    const result = await runAgent({
+      root,
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "build",
+      messages: [{ role: "user", text: "read note" }],
+      permissions: { "*": "allow", doom_loop: "ask" },
+      requestApproval,
+      onEvent: () => {},
+      onTaskEvent: (event) => taskEvents.push(`${event.type}:${event.detail}`),
+      doomLoopThreshold: 2,
+    })
+
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ tool: "doom_loop", target: "read" }))
+    expect(result.text).toContain("done")
+  })
+
+  it("continues past an approved repeated tool call without hard-stopping", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-doomok-"))
+    const requestApproval = vi.fn(async () => "once" as const)
+
+    streamText.mockImplementationOnce((config: any) => ({
+      fullStream: {
+        async *[Symbol.asyncIterator]() {
+          for (let i = 0; i < 6; i++) {
+            yield { type: "tool-call", toolName: "read", input: { path: "note.txt" }, toolCallId: `call-${i}` }
+          }
+          yield { type: "text-delta", text: "done" }
+        },
+      },
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    }))
+
+    const result = await runAgent({
+      root,
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "build",
+      messages: [{ role: "user", text: "read note" }],
+      permissions: { "*": "allow", doom_loop: "ask" },
+      requestApproval,
+      onEvent: () => {},
+      doomLoopThreshold: 2,
+    })
+
+    // Approval must let the run continue (previously it hard-stopped one call later).
+    expect(result.text).toContain("done")
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ tool: "doom_loop", target: "read" }))
+  })
+
+  it("stops after a repeated tool call when the user does not approve", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-doomrej-"))
+    const requestApproval = vi.fn(async () => "reject" as const)
+
+    streamText.mockImplementationOnce((config: any) => ({
+      fullStream: {
+        async *[Symbol.asyncIterator]() {
+          for (let i = 0; i < 3; i++) {
+            yield { type: "tool-call", toolName: "read", input: { path: "note.txt" }, toolCallId: `call-${i}` }
+          }
+          yield { type: "text-delta", text: "done" }
+        },
+      },
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    }))
+
+    await expect(runAgent({
+      root,
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "build",
+      messages: [{ role: "user", text: "read note" }],
+      permissions: { "*": "allow", doom_loop: "ask" },
+      requestApproval,
+      onEvent: () => {},
+      doomLoopThreshold: 2,
+    })).rejects.toThrow("rejected continuing after repeated tool calls")
   })
 })

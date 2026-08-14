@@ -108,11 +108,17 @@ export async function warmCatalog() {
 export function estimateProviderCost(price: PriceVersion, usage: PriceableUsage) {  const rates = price.perMillionTokens
   const cacheRead = usage.cacheReadTokens || 0
   const cacheWrite = usage.cacheWriteTokens || 0
+  const reasoningTokens = usage.reasoningTokens || 0
   const ordinaryInput = Math.max(0, usage.inputTokens - cacheRead - cacheWrite)
+  // OpenAI-style usage reports output tokens that already include reasoning
+  // tokens (output = text + reasoning). Charge only the non-reasoning output at
+  // the output rate, and the reasoning portion at the reasoning rate (falling
+  // back to the output rate when the catalog omits one).
+  const ordinaryOutput = Math.max(0, usage.outputTokens - reasoningTokens)
   const usd = ordinaryInput * rates.input / 1_000_000
     + cacheRead * (rates.cacheRead ?? rates.input) / 1_000_000
     + cacheWrite * (rates.cacheWrite ?? rates.input) / 1_000_000
-    + usage.outputTokens * rates.output / 1_000_000
-    + (rates.reasoning ? (usage.reasoningTokens || 0) * rates.reasoning / 1_000_000 : 0)
+    + ordinaryOutput * rates.output / 1_000_000
+    + reasoningTokens * (rates.reasoning ?? rates.output) / 1_000_000
   return { usd, estimated: true as const, effectiveFrom: price.effectiveFrom, source: price.source }
 }

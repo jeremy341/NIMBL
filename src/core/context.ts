@@ -106,7 +106,13 @@ class IndexedProjectContext implements ProjectContextIndex {
 
   constructor(private readonly root: string, private readonly extensions: ReadonlySet<string>, watchProject = false, private readonly hybrid = false, private readonly graphEnabled = true) {
     if (watchProject) {
-      this.watcher = watch(root, { recursive: true }, (_event, filename) => this.invalidate(filename?.toString()))
+      this.watcher = watch(root, { recursive: true }, (_event, filename) => {
+        const path = (filename?.toString() ?? "").replaceAll("\\", "/")
+        // Ignore NIMBL's own state and heavy/vendored directories so session
+        // saves and dependency installs don't invalidate the project index.
+        if (/(^|\/)(\.nimbl|\.git|node_modules|dist)(\/|$)/.test(path)) return
+        this.invalidate(path)
+      })
       this.watcher.unref()
     }
   }
@@ -128,6 +134,12 @@ class IndexedProjectContext implements ProjectContextIndex {
     if (this.ready) return this.ready
     this.ready = this.build()
     try { await this.ready } finally { this.ready = undefined }
+    // A file change arriving mid-build invalidated the index; rebuild once more
+    // so callers never get a snapshot older than the latest invalidation.
+    if (this.dirty && this.ready === undefined) {
+      this.ready = this.build()
+      try { await this.ready } finally { this.ready = undefined }
+    }
   }
 
   private async loadIgnoreRules() {

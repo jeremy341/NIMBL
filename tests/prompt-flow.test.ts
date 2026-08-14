@@ -22,10 +22,12 @@ describe("prompt queue", () => {
     const one = dequeuePrompt(queued)
     expect(one.prompt).toBe("first")
     expect(one.session.queuedPrompts).toHaveLength(1)
+    expect(one.session.runState).toBe("queued")
     const two = dequeuePrompt(one.session)
     expect(two.prompt).toBe("second")
     expect(two.session.queuedPrompts).toHaveLength(0)
-    expect(two.session.runState).toBe("queued")
+    // After draining the last prompt, the session returns to idle (not stuck queued).
+    expect(two.session.runState).toBe("idle")
   })
 
   it("ignores empty prompts", () => {
@@ -51,6 +53,22 @@ describe("prompt draft history", () => {
 
   it("returns the session unchanged when history is empty", () => {
     expect(navigateDraft(base, "previous")).toBe(base)
+  })
+
+  it("returns to the unsaved live draft after navigating past the newest history entry", () => {
+    const first = setDraft(base, "one")
+    const second = setDraft(first, "two")
+    // Mirror the TUI's onHistory: record the live draft into history before
+    // navigating so "next" past the newest entry recovers it.
+    const withLive = second.draft !== (second.draftHistory || []).at(-1)
+      ? { ...second, draftHistory: [...(second.draftHistory || []), second.draft!].filter(Boolean) }
+      : second
+    const oldest = navigateDraft(withLive, "previous")
+    expect(oldest.draft).toBe("one")
+    const oneForward = navigateDraft(oldest, "next")
+    expect(oneForward.draft).toBe("two")
+    const pastNewest = navigateDraft(oneForward, "next")
+    expect(pastNewest.draft).toBe("two")
   })
 })
 

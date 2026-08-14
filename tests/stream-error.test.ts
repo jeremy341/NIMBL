@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { describeStreamError, retryable } from "@/core/agent"
+import { describeStreamError, retryable, retryAfterMs } from "@/core/agent"
 
 describe("stream error handling", () => {
   it("describes a 429 rate limit clearly", () => {
@@ -39,5 +39,27 @@ describe("stream error handling", () => {
   it("does not retry a genuine empty stream without a provider status", () => {
     const error = Object.assign(new Error("No output generated. Check the stream for errors."), { name: "AI_NoOutputGeneratedError" })
     expect(retryable(error)).toBe(false)
+  })
+
+  it("reads a numeric Retry-After header as seconds", () => {
+    const error = Object.assign(new Error("rate limited"), { statusCode: 429, headers: { "retry-after": "5" } })
+    expect(retryAfterMs(error)).toBe(5000)
+  })
+
+  it("reads a decimal Retry-After header as milliseconds", () => {
+    const error = Object.assign(new Error("rate limited"), { statusCode: 429, headers: { "retry-after": "0.25" } })
+    expect(retryAfterMs(error)).toBe(250)
+  })
+
+  it("reads an HTTP-date Retry-After header", () => {
+    const later = new Date(Date.now() + 3_000).toUTCString()
+    const error = Object.assign(new Error("rate limited"), { statusCode: 429, headers: { "retry-after": later } })
+    const value = retryAfterMs(error)
+    expect(value).toBeGreaterThanOrEqual(2000)
+    expect(value).toBeLessThanOrEqual(4000)
+  })
+
+  it("returns undefined when there is no Retry-After header", () => {
+    expect(retryAfterMs(Object.assign(new Error("limit"), { statusCode: 429 }))).toBeUndefined()
   })
 })

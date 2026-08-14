@@ -155,9 +155,89 @@ export const PROVIDERS: ProviderDefinition[] = [
 ]
 
 export function getProvider(id: string): ProviderDefinition {
+  ensureCustomProvider()
   const provider = PROVIDERS.find((item) => item.id === id)
   if (!provider) throw new Error(`Unknown provider "${id}".`)
   return provider
+}
+
+/**
+ * Registers an arbitrary OpenAI-compatible provider from environment variables so
+ * NIMBL can target any endpoint (e.g. a free proxy) for benchmarks and local
+ * testing:
+ *   NIMBL_CUSTOM_PROVIDER   provider id (default "custom")
+ *   NIMBL_CUSTOM_BASE_URL   endpoint base URL (required)
+ *   NIMBL_CUSTOM_MODEL      model id (required; one-model provider)
+ *   NIMBL_CUSTOM_API_KEY    bearer key (optional; also accepted inline)
+ *   NIMBL_CUSTOM_CONTEXT_WINDOW  (optional, default 128_000)
+ * Safe to call repeatedly; registration is idempotent.
+ */
+export function registerCustomProvider(): ProviderDefinition | undefined {
+  const baseURL = process.env.NIMBL_CUSTOM_BASE_URL
+  if (!baseURL) return undefined
+  const id = process.env.NIMBL_CUSTOM_PROVIDER || "custom"
+  const modelID = process.env.NIMBL_CUSTOM_MODEL
+  if (!modelID) throw new Error("NIMBL_CUSTOM_BASE_URL requires NIMBL_CUSTOM_MODEL.")
+  const existing = PROVIDERS.find((item) => item.id === id)
+  if (existing) {
+    // Re-sync from env so a changed endpoint is picked up (idempotent otherwise).
+    const model = existing.models.find((item) => item.id === modelID)
+    if (model) return existing
+    existing.models.push(defineModel(id, { id: modelID, name: modelID, contextWindow: Number(process.env.NIMBL_CUSTOM_CONTEXT_WINDOW) || 128_000 }))
+    return existing
+  }
+  const contextWindow = Number(process.env.NIMBL_CUSTOM_CONTEXT_WINDOW) || 128_000
+  const definition = compatible(
+    id,
+    process.env.NIMBL_CUSTOM_NAME || "Custom provider",
+    "Runtime-registered OpenAI-compatible endpoint",
+    "NIMBL_CUSTOM_API_KEY",
+    baseURL,
+    [{ id: modelID, name: modelID, contextWindow }],
+    { health: { path: "/models", timeoutMs: 3000 }, discovery: { path: "/models" } },
+  )
+  PROVIDERS.push(definition)
+  return definition
+}
+
+let customProviderChecked = false
+function ensureCustomProvider() {
+  // Re-check env each time so tests and callers that set NIMBL_CUSTOM_* after
+  // first use still register; the registration itself is idempotent.
+  customProviderChecked = true
+  registerCustomProvider()
+}
+
+export function customProviderID(): string | undefined {
+  return process.env.NIMBL_CUSTOM_BASE_URL ? (process.env.NIMBL_CUSTOM_PROVIDER || "custom") : undefined
+}
+
+function modelSuggestions(providerID: string, modelID: string): string[] {
+  const candidates = getProvider(providerID).models.map((model) => model.id)
+  return candidates
+    .map((candidate) => ({ candidate, score: editDistance(modelID, candidate) }))
+    .filter(({ score }) => score <= Math.max(3, Math.floor(modelID.length / 3)))
+    .sort((left, right) => left.score - right.score || left.candidate.localeCompare(right.candidate))
+    .slice(0, 3)
+    .map(({ candidate }) => candidate)
+}
+
+function editDistance(left: string, right: string): number {
+  const a = left.length
+  const b = right.length
+  if (a === 0) return b
+  if (b === 0) return a
+  const row = Array.from({ length: b + 1 }, (_, index) => index)
+  for (let i = 1; i <= a; i++) {
+    let previous = row[0]!
+    row[0] = i
+    for (let j = 1; j <= b; j++) {
+      const saved = row[j]!
+      row[j] = Math.min(row[j]! + 1, row[j - 1]! + 1, previous + (left[i - 1] === right[j - 1] ? 0 : 1))
+      previous = saved
+    }
+  }
+  return row[b]!
 }
 
 export function defaultModelFor(providerID: string): string {
@@ -168,14 +248,20 @@ export function defaultModelFor(providerID: string): string {
 
 export function getModel(providerID: string, modelID: string) {
   const model = getProvider(providerID).models.find((item) => item.id === modelID)
-  if (!model) throw new Error(`Unknown model "${modelID}" for provider "${providerID}".`)
+  if (!model) {
+    const suggestions = modelSuggestions(providerID, modelID)
+    throw new Error(suggestions.length ? `Unknown model "${modelID}" for provider "${providerID}". Did you mean: ${suggestions.join(", ")}?` : `Unknown model "${modelID}" for provider "${providerID}".`)
+  }
   return model
 }
 
 export function resolveModel(providerID: string, modelID: string, contextWindowOverride?: number): ProviderModel {
   const configured = getProvider(providerID).models.find((item) => item.id === modelID)
   if (configured) return { ...configured, contextWindow: Math.min(configured.contextWindow, contextWindowOverride || configured.contextWindow) }
-  if (!contextWindowOverride || contextWindowOverride < 1_024) throw new Error(`Unknown model "${modelID}" for provider "${providerID}" requires an explicit context window.`)
+  if (!contextWindowOverride || contextWindowOverride < 1_024) {
+    const suggestions = modelSuggestions(providerID, modelID)
+    throw new Error(suggestions.length ? `Unknown model "${modelID}" for provider "${providerID}" requires an explicit context window. Did you mean: ${suggestions.join(", ")}?` : `Unknown model "${modelID}" for provider "${providerID}" requires an explicit context window.`)
+  }
   return {
     id: modelID,
     name: modelID,
@@ -277,10 +363,12 @@ export function modelsDevKey(providerID: string): string {
 }
 
 /**
- * Overlay live models.dev data onto the static catalog. Every provider whose
- * key exists in `data` gets its `models` replaced with live entries (name,
- * context window, output limit, cost, capabilities, status, free flag).
- * Falls back to the static list for providers missing from the feed.
+ * Overlay live models.dev data onto the static catalog. Live entries update the
+ * static model definitions they match (name, context window, output limit,
+ * cost, capabilities, status, free flag); static models that the feed omits
+ * (or misreports by omitting) are preserved as a curated fallback, and new live
+ * models are appended. This avoids silently replacing the curated list with
+ * possibly-wrong defaults.
  */
 export function applyLiveCatalog(data: Record<string, unknown>): void {
   for (const provider of PROVIDERS) {
@@ -288,7 +376,25 @@ export function applyLiveCatalog(data: Record<string, unknown>): void {
     const live = data[key] as LiveProviderEntry | undefined
     const models = live?.models as Record<string, LiveModelEntry> | undefined
     if (!models) continue
-    const next = Object.entries(models).map(([id, entry]) => liveToModel(provider.id, id, entry))
-    if (next.length) provider.models = next
+    const liveEntries = Object.entries(models)
+    if (!liveEntries.length) continue
+    const byID = new Map(provider.models.map((model) => [model.id, model]))
+    for (const [id, entry] of liveEntries) {
+      const liveModel = liveToModel(provider.id, id, entry)
+      const existing = byID.get(id)
+      if (existing) {
+        // Overlay the live metadata onto the curated definition, preserving any
+        // curated fields the feed omitted (e.g. a specific context window).
+        byID.set(id, {
+          ...existing,
+          ...liveModel,
+          contextWindow: liveModel.contextWindow ?? existing.contextWindow,
+          maxOutputTokens: liveModel.maxOutputTokens ?? existing.maxOutputTokens,
+        })
+      } else {
+        byID.set(id, liveModel)
+      }
+    }
+    provider.models = [...byID.values()]
   }
 }

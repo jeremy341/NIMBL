@@ -3,7 +3,7 @@ import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { EmptyBorder, SplitBorder, setBorder } from "./border"
 import { Spinner } from "./spinner"
-import { syntaxStyle } from "./syntax"
+import { createSyntaxStyle } from "./syntax"
 import { agentColor, theme } from "./theme"
 import type { AgentMode, CommandOption, SessionPromptRef } from "./types"
 
@@ -11,6 +11,24 @@ const SUBMIT_KEY_BINDINGS = [
   { name: "return", action: "submit" as const },
   { name: "kpenter", action: "submit" as const },
   { name: "return", shift: true, action: "newline" as const },
+  // Emacs-style editing (mirrors opencode's prompt keymap). Bindings that
+  // collide with app-level keybinds (ctrl+b/f/d/y/z = sidebar/pin/delete/
+  // undo/redo) are intentionally omitted so the app shortcuts keep working.
+  { name: "a", ctrl: true, action: "line-home" as const },
+  { name: "e", ctrl: true, action: "line-end" as const },
+  { name: "a", ctrl: true, shift: true, action: "select-line-home" as const },
+  { name: "e", ctrl: true, shift: true, action: "select-line-end" as const },
+  { name: "a", meta: true, action: "buffer-home" as const },
+  { name: "e", meta: true, action: "buffer-end" as const },
+  { name: "a", meta: true, shift: true, action: "select-buffer-home" as const },
+  { name: "e", meta: true, shift: true, action: "select-buffer-end" as const },
+  { name: "b", meta: true, action: "word-backward" as const },
+  { name: "f", meta: true, action: "word-forward" as const },
+  { name: "d", meta: true, action: "delete-word-forward" as const },
+  { name: "w", ctrl: true, action: "delete-word-backward" as const },
+  { name: "k", ctrl: true, action: "delete-to-line-end" as const },
+  { name: "u", ctrl: true, action: "delete-to-line-start" as const },
+  { name: "a", super: true, action: "select-all" as const },
 ]
 const PROMPT_PLACEHOLDERS = ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"]
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
@@ -98,7 +116,7 @@ export function SessionPrompt(props: SessionPromptProps) {
   let pasteTypeID = 0
   const pastedBlocks = new Map<number, string>()
   let syncing = false
-  const pasteStyleID = syntaxStyle.getStyleId("extmark.paste")!
+  const pasteStyleID = () => createSyntaxStyle().getStyleId("extmark.paste")!
   const placeholderText = () => `Ask anything... "${PROMPT_PLACEHOLDERS[placeholderIndex() % PROMPT_PLACEHOLDERS.length]}"`
   const retryText = () => {
     const retry = props.retry
@@ -242,7 +260,7 @@ export function SessionPrompt(props: SessionPromptProps) {
         start,
         end: start + promptOffsetWidth(marker),
         virtual: true,
-        styleId: pasteStyleID,
+        styleId: pasteStyleID(),
         typeId: pasteTypeID,
       })
       pastedBlocks.set(id, content)
@@ -523,7 +541,7 @@ export function SessionPrompt(props: SessionPromptProps) {
             ref={(value: TextareaRenderable) => {
               textarea = value
               value.keyBindings = SUBMIT_KEY_BINDINGS
-              value.syntaxStyle = syntaxStyle
+              value.syntaxStyle = createSyntaxStyle()
               pasteTypeID = value.extmarks.registerType("prompt-paste")
               props.ref?.(promptRef)
             }}

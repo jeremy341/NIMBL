@@ -32,6 +32,7 @@ export {
   BlockTool,
   InlineTool,
   SessionScreen,
+  duration,
   type BlockToolProps,
   type InlineToolProps,
   type SessionScreenProps,
@@ -39,5 +40,5 @@ export {
 export { Sidebar, type SidebarProps } from "./sidebar"
 export { SPINNER_FRAMES, Spinner, enableAnimations, type SpinnerProps } from "./spinner"
 export { Toast, type ToastProps, type ToastVariant } from "./toast"
-export { agentColor, theme } from "./theme"
-export type { AgentMode, AssistantPart, ChatMessage, ChatSession, CommandOption, SessionPromptRef } from "./types"
+export { agentColor, currentThemeName, setThemeName, theme, THEMES, THEME_NAMES, type ThemeName, type ThemePalette } from "./theme"
+export type { AgentMode, AssistantPart, ChatMessage, ChatSession, CommandOption, SessionPromptRef, SubagentActivity } from "./types"

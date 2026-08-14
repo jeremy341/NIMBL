@@ -7,6 +7,8 @@ dist/
 Thumbs.db
 .idea/
 .nimbl/
+# Generated benchmark corpus (regenerate with bun benchmarks/generate-tier-b.ts)
+benchmarks/corpus/tier-b/
 nimbl-export-*.md
 nimbl-share-*.md
 renderer-check.txt

@@ -90,12 +90,16 @@ import {
   Toast,
   agentColor,
   enableAnimations,
+  setThemeName,
+  THEME_NAMES,
   theme,
+  duration,
   type AgentMode,
   type ChatMessage,
   type ChatSession,
   type CommandOption,
   type SessionPromptRef,
+  type SubagentActivity,
   type ToastVariant,
 } from "@/tui-opencode-ui"
 
@@ -211,7 +215,7 @@ type DialogName =
 interface PendingApproval {
   sessionID: string
   request: PermissionRequest
-  resolve: (choice: "once" | "always" | "reject") => void
+  resolve: (choice: "once" | "always" | "reject" | { reject: string }) => void
 }
 
 interface PendingQuestion {
@@ -356,6 +360,26 @@ function visibleMessages(session: StoredSession): ChatMessage[] {
   })
 }
 
+const HISTORY_TOOL_OUTPUT_CAP = 6_000
+
+export function assistantHistoryText(message: StoredMessage): string {
+  const lines: string[] = []
+  if (message.text) lines.push(message.text)
+  for (const part of message.parts ?? []) {
+    if (part.type === "text") continue
+    if (part.type === "reasoning") continue
+    if (part.state !== "completed") continue
+    const output = part.output
+    const clipped = output && output.length > HISTORY_TOOL_OUTPUT_CAP ? output.slice(0, HISTORY_TOOL_OUTPUT_CAP) + "\n… (tool output truncated)" : output
+    if (part.tool === "read") lines.push(`[read ${part.path ?? part.title}]\n${clipped ?? ""}`)
+    else if (part.tool === "glob" || part.tool === "grep") lines.push(`[${part.tool} ${part.title}]\n${clipped ?? ""}`)
+    else if (part.tool === "bash" || part.tool === "shell") lines.push(`[shell]\n${clipped ?? ""}`)
+    else if (part.tool === "webfetch" || part.tool === "websearch") lines.push(`[${part.tool}]\n${clipped ?? ""}`)
+    else if (clipped) lines.push(`[${part.tool}]\n${clipped}`)
+  }
+  return lines.join("\n")
+}
+
 export function App() {
   const argv = process.argv
   let globalConfig = loadGlobalConfig()
@@ -372,7 +396,11 @@ export function App() {
   let recoveryNotice: string | undefined
   let recoveryFingerprint: string | undefined
   let store: SessionStore | undefined
-  if (storeResult.status === "valid") store = storeResult.store
+  if (storeResult.status === "valid") {
+    // A previous NIMBL run may have crashed mid-turn, leaving sessions stuck
+    // in "running"/"queued". Mark them interrupted so they reopen cleanly.
+    store = backend.recoverInterruptedRuns(structuredClone(storeResult.store))
+  }
   if (storeResult.status === "invalid") {
     recoveryFingerprint = storeResult.fingerprint
     try {
@@ -437,6 +465,7 @@ export function App() {
   const [conceal, setConceal] = createSignal(true)
   const [thinkingMode, setThinkingMode] = createSignal<"show" | "hide">(globalConfig.thinkingMode ?? "hide")
   const [retryState, setRetryState] = createSignal<{ message: string; attempt: number; next: number }>()
+  const [childRetries, setChildRetries] = createSignal<Record<string, { message: string; attempt: number }>>({})
   const [showTimestamps, setShowTimestamps] = createSignal(false)
   const [animationsEnabled, setAnimationsEnabled] = createSignal(true)
   const [catalogVersion, setCatalogVersion] = createSignal(0)
@@ -488,6 +517,34 @@ export function App() {
       onNext: () => setActiveID(siblings[(index + 1) % siblings.length]?.id || session.id),
     }
   })
+  // Live child activity for delegate/task tool parts (part.id === child session id).
+  const childActivity = createMemo(() => {
+    const result: Record<string, SubagentActivity> = {}
+    const childrenByID = new Map(sessions().filter((item) => item.parentID === active().id).map((item) => [item.id, item]))
+    for (const session of childrenByID.values()) {
+      const tools: { tool: string; state: string; title?: string; started?: number; ended?: number }[] = []
+      for (const message of session.messages) {
+        if (message.role !== "assistant") continue
+        for (const part of message.parts ?? []) {
+          if (part.type === "tool") tools.push({ tool: part.tool, state: part.state, title: part.title, started: part.started, ended: part.ended })
+        }
+      }
+      const running = session.runState === "running" || session.runState === "queued"
+      const retrying = childRetries()[session.id]
+      const firstUser = session.messages.find((message) => message.role === "user")?.time
+      const lastAssistant = session.messages.findLast((message) => message.role === "assistant")?.completed
+      const durationMs = firstUser !== undefined && lastAssistant !== undefined ? Math.max(0, lastAssistant - firstUser) : undefined
+      result[session.id] = {
+        running,
+        toolcalls: tools.length,
+        current: tools.findLast((tool) => (tool.state === "running" || tool.state === "completed") && tool.title),
+        retrying,
+        duration: durationMs !== undefined && durationMs > 0 ? duration(durationMs) : undefined,
+      }
+    }
+    return result
+  })
+  const pendingApprovalToolID = createMemo(() => currentApproval()?.request.id)
   const renameTarget = createMemo(() => sessions().find((session) => session.id === pendingRename()) ?? active())
   const deleteTarget = createMemo(() => sessions().find((session) => session.id === pendingDelete()) ?? active())
   const currentApproval = createMemo(() => approvalQueue()[0])
@@ -637,8 +694,8 @@ export function App() {
     return providerKeys()[providerID] || providerApiKey(providerID) || globalConfig.providerKeys?.[providerID] || localFallbackKey(providerID) || ""
   }
 
-  function persistNow() {
-    if (persistenceBlocked) return
+  function persistNow(allowRecovery = true) {
+    if (persistenceBlocked && !allowRecovery) return
     if (persistTimer) clearTimeout(persistTimer)
     persistTimer = undefined
     try {
@@ -657,6 +714,33 @@ export function App() {
       if (saved.sessions.length !== sessions().length) setSessions(saved.sessions)
     } catch (error) {
       if (error instanceof SessionStoreConflictError) {
+        if (allowRecovery) {
+          // Recover from the concurrent writer instead of pausing forever: adopt
+          // the on-disk revision, merge any sessions the other process created,
+          // and resume saving. This prevents permanent silent data loss.
+          try {
+            const fresh = backend.load()
+            const disk = fresh.store
+            storeRevision = disk.revision
+            backend.adoptPersistedState(disk.revision, fresh.recoveryFingerprint)
+            const memory = sessions()
+            const merged = [...disk.sessions]
+            for (const session of memory) {
+              const index = merged.findIndex((item) => item.id === session.id)
+              if (index >= 0) merged[index] = session
+              else merged.push(session)
+            }
+            setSessions(merged)
+            persistenceBlocked = false
+            showToast("Recovered from a session conflict; saving resumed. Another NIMBL may have written the store.", "warning", "Session conflict")
+            persistNow(false)
+            return
+          } catch {
+            persistenceBlocked = true
+            showToast("Session conflict could not be auto-recovered. Saving is paused to protect both versions. Restart NIMBL to resolve.", "error", "Session conflict")
+            return
+          }
+        }
         persistenceBlocked = true
         showToast(error.message + " Automatic saving is paused to protect both versions.", "error", "Session conflict")
         return
@@ -821,12 +905,12 @@ export function App() {
     if (alwaysAllowed().has(approvalKey(request))) return Promise.resolve<"always">("always")
     setActiveID(sessionID)
     setView("session")
-    return new Promise<"once" | "always" | "reject">((resolve) => {
+    return new Promise<"once" | "always" | "reject" | { reject: string }>((resolve) => {
       setApprovalQueue((queue) => [...queue, { sessionID, request, resolve }])
     })
   }
 
-  function answerApproval(choice: "once" | "always" | "reject") {
+  function answerApproval(choice: "once" | "always" | "reject" | { reject: string }) {
     const pending = currentApproval()
     if (!pending) return
     if (choice === "always") {
@@ -868,8 +952,15 @@ export function App() {
     for (const question of questions) question.resolve("Skipped by user")
   }
 
-  function drainQueued(sessionID: string) {
+  function drainQueued(sessionID: string, aborted = false) {
     const session = sessions().find((item) => item.id === sessionID)
+    if (aborted) {
+      // Aborting should stop the queue, not fire the next prompt.
+      if (session?.queuedPrompts?.length) {
+        setSession(sessionID, (current) => ({ ...current, queuedPrompts: [], runState: "interrupted" as const, updated: Date.now() }))
+      }
+      return
+    }
     if (!session?.queuedPrompts?.length) return
     const { session: next, prompt } = dequeuePrompt(session)
     setSession(sessionID, () => next)
@@ -891,21 +982,37 @@ export function App() {
   function history(session: StoredSession): AgentMessage[] {
     const result: AgentMessage[] = []
     for (const message of session.messages) {
-      if (message.role === "user") result.push({ role: "user", text: message.agentText || message.text })
-      if (message.role === "assistant" && message.text) result.push({ role: "assistant", text: message.text })
+      if (message.role === "user") {
+        // Replay the prompt without the inline attachment/command blocks, which
+        // are re-expanded fresh by preparePromptContext each turn (feeding the
+        // full 24 KB blocks verbatim on every later message burns context).
+        const raw = message.agentText || message.text
+        const markers = ["\n\nAttached file:", "\n\nUser-requested command output"]
+        const indexes = markers.map((marker) => raw.indexOf(marker)).filter((index) => index >= 0)
+        const end = indexes.length ? Math.min(...indexes) : -1
+        result.push({ role: "user", text: end >= 0 ? raw.slice(0, end) : raw })
+      }
+      if (message.role === "assistant") {
+        // Reconstruct the assistant turn including tool outputs so the model
+        // retains file contents/search results/shell output on later turns.
+        const text = assistantHistoryText(message)
+        if (text) result.push({ role: "assistant", text })
+      }
     }
     return result
   }
 
   async function runSubagent(
     parentSessionID: string,
-    request: { prompt: string; agent?: AgentMode },
+    request: { id?: string; prompt: string; agent?: AgentMode },
     runtime: { provider: string; model: string; key: string; parentTaskID?: string; depth: number },
   ): Promise<string> {
     if (runtime.depth >= 3) throw new Error("Subagent delegation depth limit reached.")
     const parent = sessions().find((item) => item.id === parentSessionID)
     if (!parent) throw new Error("Parent session was not found.")
-    const childID = id()
+    // The delegate tool passes its own event id as request.id, so the child
+    // session id matches the parent's delegate part id (part.id === child.id).
+    const childID = request.id ?? id()
     const userID = id()
     const assistantID = id()
     const mode = request.agent ?? "plan"
@@ -946,6 +1053,7 @@ export function App() {
         onFileChange: (change) => setSession(childID, (value) => recordSnapshot(value, { ...change, time: Date.now(), messageID: userID })),
         onFileChanges: (changes) => setSession(childID, (value) => recordSnapshotGroup(value, changes, Date.now(), userID)),
         onEvent: (event) => updateMessage(childID, assistantID, (message) => reduceAssistantEvents(message, [event], id), false),
+        onRetry: (retry) => setChildRetries((current) => ({ ...current, [childID]: { message: retry.message, attempt: retry.attempt } })),
       })
       updateMessage(childID, assistantID, (message) => ({
         ...finishAssistant(message, Date.now()),
@@ -964,11 +1072,13 @@ export function App() {
         },
       }))
       setSession(childID, (session) => ({ ...session, runState: "idle", unread: activeID() !== childID, updated: Date.now() }))
+      setChildRetries((current) => { const next = { ...current }; delete next[childID]; return next })
       return result.text
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       updateMessage(childID, assistantID, (assistant) => ({ ...finishAssistant(assistant, Date.now()), error: message }))
       setSession(childID, (session) => ({ ...session, runState: "failed", unread: activeID() !== childID, updated: Date.now() }))
+      setChildRetries((current) => { const next = { ...current }; delete next[childID]; return next })
       throw error
     }
   }
@@ -1012,6 +1122,7 @@ export function App() {
         ...current,
         title: current.messages.length ? current.title : preview(mention.text),
         messages: [...current.messages, user, assistant],
+        runState: "running",
         updated: Date.now(),
       }))
       try {
@@ -1019,16 +1130,17 @@ export function App() {
         updateMessage(sessionID, assistantID, (message) => ({ ...finishAssistant(message, Date.now()), text: result }))
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        updateMessage(sessionID, assistantID, (assistantMessage) => ({ ...finishAssistant(assistantMessage), error: message }))
+        updateMessage(sessionID, assistantID, (assistantMessage) => ({ ...finishAssistant(assistantMessage, undefined, true), error: message }))
         showToast(message, "error")
       } finally {
         drainInteractions(sessionID)
         setAbortController(undefined)
         setRunningSessionID(undefined)
         setRetryState(undefined)
+        setSession(sessionID, (session) => ({ ...session, runState: controller.signal.aborted ? "interrupted" as const : "idle" as const, updated: Date.now() }))
         persistNow()
         focusPrompt()
-        drainQueued(sessionID)
+        drainQueued(sessionID, controller.signal.aborted)
       }
       return
     }
@@ -1129,6 +1241,7 @@ export function App() {
         ...current,
         title: current.messages.length ? current.title : preview(displayText),
         messages: [...current.messages, user, assistant],
+        runState: "running",
         updated: Date.now(),
       }))
 
@@ -1198,7 +1311,7 @@ export function App() {
       const message = error instanceof Error ? error.message : String(error)
       if (assistantID) {
         updateMessage(sessionID, assistantID, (assistant) => ({
-          ...finishAssistant(assistant),
+          ...finishAssistant(assistant, undefined, true),
           error: message,
         }))
       } else {
@@ -1211,9 +1324,10 @@ export function App() {
       setAbortController(undefined)
       setRunningSessionID(undefined)
       setRetryState(undefined)
+      setSession(sessionID, (session) => ({ ...session, runState: controller.signal.aborted ? "interrupted" as const : "idle" as const, updated: Date.now() }))
       persistNow()
       focusPrompt()
-      drainQueued(sessionID)
+      drainQueued(sessionID, controller.signal.aborted)
     }
   }
 
@@ -1222,7 +1336,28 @@ export function App() {
     const sessionID = runningSessionID()
     if (!controller || !sessionID) return
     controller.abort()
+    // Cancel the session's own task and every descendant subagent task so an
+    // aborted parent cannot leave orphaned children mutating the filesystem or
+    // hijacking the approval/question dock.
+    cancelSessionTaskTree(sessionID)
     drainInteractions(sessionID)
+  }
+
+  function cancelSessionTaskTree(sessionID: string) {
+    const roots = backend.listTasks(sessionID).filter((task) => task.status === "running" || task.status === "queued")
+    for (const root of roots) backend.cancelTask(root.id)
+    // Walk the parent→child chain transitively.
+    let frontier = roots.map((task) => task.id)
+    while (frontier.length) {
+      const next: string[] = []
+      for (const parentID of frontier) {
+        for (const child of backend.listTasks().filter((task) => task.parentTaskID === parentID && (task.status === "running" || task.status === "queued"))) {
+          backend.cancelTask(child.id)
+          next.push(child.id)
+        }
+      }
+      frontier = next
+    }
   }
 
   function persistSettings(next: NimblSettings) {
@@ -1865,6 +2000,15 @@ export function App() {
     }
     if (currentApproval() || currentQuestion()) return
     if (dialog()) return
+    // Subagent navigation: up = parent, left/right = prev/next child (mirrors
+    // opencode's session.parent / session.child.next / session.child.previous).
+    // Only active when the composer is not focused so typing arrows still work.
+    const subagentNav = subagentNavigation()
+    if (subagentNav && renderer?.currentFocusedEditor == null) {
+      if (name === "up" || name === "arrowup") { event.preventDefault?.(); event.stopPropagation?.(); subagentNav.onParent(); return }
+      if (name === "left" || name === "arrowleft") { event.preventDefault?.(); event.stopPropagation?.(); subagentNav.onPrevious(); return }
+      if (name === "right" || name === "arrowright") { event.preventDefault?.(); event.stopPropagation?.(); subagentNav.onNext(); return }
+    }
     if (matchesKeybind(event, settings().keybinds.palette)) {
       event.preventDefault?.()
       event.stopPropagation?.()
@@ -1929,6 +2073,11 @@ export function App() {
 
   createEffect(() => {
     enableAnimations(animationsEnabled())
+  })
+
+  createEffect(() => {
+    const name = settings().theme
+    if (name === "nimbl" || name === "opencode" || name === "mono") setThemeName(name)
   })
 
   onMount(() => {
@@ -1996,7 +2145,12 @@ export function App() {
             onPromptQuit={shutdown}
             onHistory={(direction) => {
               const session = active()
-              const next = navigateDraft(session, direction)
+              // Record the current live draft into history first so navigating
+              // "next" past the newest entry can recover it instead of losing it.
+              const withLive = session.draft && session.draft !== (session.draftHistory || []).at(-1)
+                ? { ...session, draftHistory: [...(session.draftHistory || []), session.draft].filter(Boolean).slice(-50) }
+                : session
+              const next = navigateDraft(withLive, direction)
               setSession(activeID(), () => next)
               setDraft(next.draft || "")
               sessionPrompt?.focus()
@@ -2021,7 +2175,7 @@ export function App() {
               tool: currentApproval()!.request.tool,
             } : undefined}
             onApproval={answerApproval}
-            onRejectWithMessage={(message) => showToast(`Rejected with note: ${message.slice(0, 80)}`, "warning")}
+            onRejectWithMessage={(message) => answerApproval({ reject: message })}
             pendingQuestion={currentQuestion() ? {
               prompt: currentQuestion()!.prompt,
               options: currentQuestion()!.options,
@@ -2030,7 +2184,9 @@ export function App() {
             onQuestion={answerQuestion}
             promptRef={(value) => { sessionPrompt = value }}
             subagentNavigation={subagentNavigation()}
-            onSubagentClick={() => setDialog("subagents")}
+            subagentActivity={childActivity()}
+            pendingApprovalToolID={pendingApprovalToolID()}
+            onSubagentClick={(sessionID) => { if (sessionID) { setActiveID(sessionID); setView("session"); return } setDialog("subagents") }}
             conceal={conceal()}
             thinkingMode={thinkingMode()}
             showTimestamps={showTimestamps()}
@@ -2201,14 +2357,15 @@ export function App() {
           <Show when={dialog() === "theme"}>
             <SelectDialog
               title="Select theme"
-              options={["nimbl", "opencode", "mono"].map((value) => ({
+              options={THEME_NAMES.map((value) => ({
                 value,
                 title: value,
                 description: value === settings().theme ? "active" : "semantic color theme",
                 current: value === settings().theme,
               }))}
-              onSelect={(value) => { persistSettings({ ...settings(), theme: value as NimblSettings["theme"] }); closeDialog(); showToast(`Theme set to ${value}. Restart NIMBL to apply it.`, "success") }}
-              onClose={closeDialog}
+              onMove={(value) => setThemeName(value as "nimbl" | "opencode" | "mono")}
+              onSelect={(value) => { persistSettings({ ...settings(), theme: value as NimblSettings["theme"] }); setThemeName(value as "nimbl" | "opencode" | "mono"); closeDialog(); showToast(`Theme set to ${value}.`, "success") }}
+              onClose={() => { setThemeName((settings().theme || "nimbl") as "nimbl" | "opencode" | "mono"); closeDialog() }}
             />
           </Show>
           <Show when={dialog() === "help"}>
@@ -2218,7 +2375,9 @@ export function App() {
             <StashDialog
               entries={active().stashes ?? []}
               onSelect={(entry) => {
-                setSession(activeID(), (session) => popDraft(session))
+                // Remove the selected stash by id (not the most recent one) and
+                // restore its text.
+                setSession(activeID(), (session) => ({ ...session, draft: entry.text, stashes: (session.stashes || []).filter((item) => item.id !== entry.id), updated: Date.now() }))
                 setDraft(entry.text)
                 showToast("Restored the stashed prompt.", "success")
               }}

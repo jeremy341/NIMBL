@@ -71,3 +71,11 @@ export interface SessionPromptRef {
   blur(): void
   set(value: string): void
 }
+
+export interface SubagentActivity {
+  running: boolean
+  toolcalls: number
+  current?: { tool: string; title?: string }
+  retrying?: { message: string; attempt: number }
+  duration?: string
+}

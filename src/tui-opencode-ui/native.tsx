@@ -1,7 +1,7 @@
 import { type CodeRenderable, type DiffRenderable, type MarkdownRenderable, type SyntaxStyle } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect } from "solid-js"
-import { syntaxStyle } from "./syntax"
+import { createSyntaxStyle } from "./syntax"
 import { theme } from "./theme"
 
 export interface NativeMarkdownProps {
@@ -15,6 +15,7 @@ export function NativeMarkdown(props: NativeMarkdownProps) {
   let currentContent: string | undefined
   let currentColor: string | undefined
   let currentConceal: boolean | undefined
+  let currentStyle: SyntaxStyle | undefined
   const requiredProps = {} as { syntaxStyle: SyntaxStyle }
 
   function initialize(value: MarkdownRenderable) {
@@ -22,14 +23,23 @@ export function NativeMarkdown(props: NativeMarkdownProps) {
     currentContent = undefined
     currentColor = undefined
     currentConceal = undefined
+    currentStyle = undefined
     // OpenTUI 0.4.5's Solid prop bridge strips prototypes from class-valued props.
-    value.syntaxStyle = syntaxStyle
     value.streaming = true
     value.internalBlockMode = "top-level"
     value.tableOptions = { style: "grid" }
     value.conceal = props.conceal ?? true
     value.bg = theme.background
+    applyStyle(value)
     update(props.content, props.color ?? theme.markdownText, props.conceal ?? true)
+  }
+
+  function applyStyle(value: MarkdownRenderable) {
+    const style = createSyntaxStyle()
+    if (currentStyle !== style) {
+      value.syntaxStyle = style
+      currentStyle = style
+    }
   }
 
   function update(content: string, color: string, conceal: boolean) {
@@ -52,6 +62,7 @@ export function NativeMarkdown(props: NativeMarkdownProps) {
     const content = props.content
     const color = props.color ?? theme.markdownText
     const conceal = props.conceal ?? true
+    if (markdown && !markdown.isDestroyed) applyStyle(markdown)
     update(content, color, conceal)
   })
 
@@ -65,13 +76,15 @@ export function NativeCode(props: { content: string; filetype?: string }) {
     if (!renderable || renderable.isDestroyed) return
     renderable.content = props.content
     renderable.filetype = props.filetype || "text"
+    renderable.syntaxStyle = createSyntaxStyle()
+    renderable.fg = theme.markdownCode
+    renderable.bg = theme.backgroundPanel
   })
   return (
     <code
       {...requiredProps}
       ref={(value: CodeRenderable) => {
         renderable = value
-        value.syntaxStyle = syntaxStyle
         value.streaming = false
         value.drawUnstyledText = true
         value.fg = theme.markdownCode
@@ -79,6 +92,7 @@ export function NativeCode(props: { content: string; filetype?: string }) {
         value.width = "100%"
         value.content = props.content
         value.filetype = props.filetype || "text"
+        value.syntaxStyle = createSyntaxStyle()
       }}
     />
   )
@@ -97,16 +111,8 @@ export function NativeDiff(props: NativeDiffProps) {
   let currentFiletype: string | undefined
   let currentView: "split" | "unified" | undefined
 
-  function initialize(value: DiffRenderable) {
-    renderable = value
-    currentDiff = undefined
-    currentFiletype = undefined
-    currentView = undefined
-    // Assign this imperatively because OpenTUI 0.4.5 strips class prototypes in JSX props.
-    value.syntaxStyle = syntaxStyle
-    value.showLineNumbers = true
-    value.width = "100%"
-    value.wrapMode = "word"
+  function applyColors(value: DiffRenderable) {
+    value.syntaxStyle = createSyntaxStyle()
     value.fg = theme.text
     value.addedBg = theme.diffAddedBg
     value.removedBg = theme.diffRemovedBg
@@ -117,6 +123,18 @@ export function NativeDiff(props: NativeDiffProps) {
     value.lineNumberBg = theme.diffContextBg
     value.addedLineNumberBg = theme.diffAddedLineNumberBg
     value.removedLineNumberBg = theme.diffRemovedLineNumberBg
+  }
+
+  function initialize(value: DiffRenderable) {
+    renderable = value
+    currentDiff = undefined
+    currentFiletype = undefined
+    currentView = undefined
+    // Assign this imperatively because OpenTUI 0.4.5 strips class prototypes in JSX props.
+    applyColors(value)
+    value.showLineNumbers = true
+    value.width = "100%"
+    value.wrapMode = "word"
     update(props.diff, props.filetype, props.width ?? dimensions().width)
   }
 
@@ -141,6 +159,7 @@ export function NativeDiff(props: NativeDiffProps) {
     const diff = props.diff
     const type = props.filetype
     const width = props.width ?? dimensions().width
+    if (renderable && !renderable.isDestroyed) applyColors(renderable)
     update(diff, type, width)
   })
 

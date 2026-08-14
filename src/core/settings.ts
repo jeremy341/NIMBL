@@ -58,6 +58,7 @@ export const DEFAULT_SETTINGS: NimblSettings = {
     "*": "ask",
     read: "allow", glob: "allow", grep: "allow", skill: "allow",
     edit: "ask", write: "ask", apply_patch: "ask", bash: "ask", webfetch: "ask", websearch: "ask", question: "ask", todowrite: "allow", delegate: "ask",
+    external_directory: "ask", doom_loop: "ask",
   },
   mcp: {}, plugins: [], lsp: {}, share: "manual",
   agents: {}, providerAllowlist: [], providerDenylist: [],

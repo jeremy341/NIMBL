@@ -38,4 +38,12 @@ describe("prompt context", () => {
       runCommand: async () => "",
     })).rejects.toThrow("Environment files")
   })
+
+  it("attaches @file references followed by trailing punctuation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-prompt-punct-"))
+    writeFileSync(join(root, "notes.md"), "Punctuated note")
+    const result = await preparePromptContext({ root, text: "See @notes.md? now.", runCommand: async () => "" })
+    expect(result.attachments).toEqual(["notes.md"])
+    expect(result.text).toContain("Punctuated note")
+  })
 })

@@ -3,3 +3,8 @@
 # the preload scans the Windows home path and can emit an EPERM warning before
 # the application starts.  Keeping runtime configuration empty also makes the
 # published bundle deterministic.
+
+# Generated benchmark corpus contains intentionally-failing golden suites.
+# Exclude it from repo-wide test discovery (goldens are graded by the harness).
+[test]
+pathIgnorePatterns = ["benchmarks/corpus/tier-b/**"]

@@ -33,7 +33,7 @@ export function isProtectedProjectPath(path: string) {
   const name = segments.at(-1) || ""
   return isProtectedEnvironmentPath(normalized)
     || segments.includes(".git")
-    || segments[0] === ".nimbl"
+    || segments.includes(".nimbl")
     || segments.includes(".ssh")
     || segments.includes(".aws")
     || PROTECTED_NAMES.has(name)
@@ -64,4 +64,29 @@ export function resolveUnprotectedProjectPath(root: string, path: string) {
   if (isProtectedEnvironmentPath(target.rel)) throw new Error("Environment files are blocked by NIMBL's default safety policy.")
   if (isProtectedProjectPath(target.rel)) throw new Error(`Path "${target.rel}" is blocked by NIMBL's default safety policy.`)
   return target
+}
+
+export interface ResolvedToolPath {
+  full: string
+  rel: string
+  inside: boolean
+}
+
+export function resolvePathAllowExternal(root: string, path: string): ResolvedToolPath {
+  const canonicalRoot = realpathSync(resolve(root))
+  const lexicalTarget = resolve(canonicalRoot, path)
+  let existing = lexicalTarget
+  const missing: string[] = []
+  while (!existsSync(existing)) {
+    const parent = dirname(existing)
+    if (parent === existing) throw new Error(`Path "${path}" cannot be resolved.`)
+    missing.unshift(basename(existing))
+    existing = parent
+  }
+  const canonicalTarget = resolve(realpathSync(existing), ...missing)
+  const rel = relative(canonicalRoot, canonicalTarget).replaceAll("\\", "/")
+  const inside = !outside(canonicalRoot, canonicalTarget)
+  if (isProtectedEnvironmentPath(rel)) throw new Error("Environment files are blocked by NIMBL's default safety policy.")
+  if (isProtectedProjectPath(rel)) throw new Error(`Path "${rel}" is blocked by NIMBL's default safety policy.`)
+  return { full: canonicalTarget, rel, inside }
 }

@@ -1,0 +1,55 @@
+{
+  "name": "nimbl-agent-benchmark-corpus",
+  "description": "Frozen end-to-end agent task corpus for NIMBL P3-02. Each task runs the full agent against the fixture project and grades success with ground-truth verifiers. Do not edit fixture files or task ground truth after a commit is tagged for a claim.",
+  "tasks": [
+    {
+      "id": "read-config",
+      "prompt": "What is the current maximum retry count configured in this project? Read the relevant file and report the exact number.",
+      "mode": "build",
+      "verify": [
+        { "type": "answerContains", "text": "3" }
+      ]
+    },
+    {
+      "id": "theme-config",
+      "prompt": "What theme is configured in the project config, and how many retries does the feature use? Read the relevant files and report both values.",
+      "mode": "build",
+      "verify": [
+        { "type": "answerContains", "text": "dark" },
+        { "type": "answerContains", "text": "3" }
+      ]
+    },
+    {
+      "id": "add-helper",
+      "prompt": "There is a helper that formats and adds numbers in the project. Read the utility file and report what the compute function returns for [1, 2, 3].",
+      "mode": "build",
+      "verify": [
+        { "type": "answerContains", "text": "6" }
+      ]
+    },
+    {
+      "id": "feature-summary",
+      "prompt": "Read the feature module and summarize what the summarize function does with a list of strings. Report how many items a two-item report contains.",
+      "mode": "build",
+      "verify": [
+        { "type": "answerContains", "text": "2" }
+      ]
+    },
+    {
+      "id": "update-config",
+      "prompt": "The team wants to raise retries to 5. Edit the project config so MAX_RETRIES is 5, then report the new value.",
+      "mode": "build",
+      "verify": [
+        { "type": "fileContains", "path": "src/config.ts", "text": "MAX_RETRIES = 5" }
+      ]
+    },
+    {
+      "id": "run-tests",
+      "prompt": "Run the project's test suite and report whether the feature test passes.",
+      "mode": "build",
+      "verify": [
+        { "type": "command", "command": "bun test ./tests/feature-check.ts" }
+      ]
+    }
+  ]
+}

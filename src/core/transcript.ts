@@ -56,13 +56,15 @@ export function reduceAssistantEvents(
   return { ...message, text, parts }
 }
 
-export function finishAssistant(message: StoredMessage, completed = Date.now()): StoredMessage {
+export function finishAssistant(message: StoredMessage, completed = Date.now(), failed = false): StoredMessage {
   return {
     ...message,
     completed,
     parts: assistantParts(message).map((part) => {
       if (part.type === "reasoning" && part.ended === undefined) return { ...part, ended: completed }
-      if (part.type === "tool" && part.state === "running") return { ...part, state: "completed", ended: completed }
+      // A tool still running when the turn ends was aborted/failed — never claim
+      // success for it (opencode marks such tools interrupted).
+      if (part.type === "tool" && part.state === "running") return { ...part, state: failed ? "failed" as const : "completed" as const, ended: completed }
       return part
     }),
   }

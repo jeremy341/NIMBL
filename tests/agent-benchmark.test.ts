@@ -1,0 +1,56 @@
+import { describe, expect, it } from "vitest"
+import { join } from "node:path"
+import { gradeTask } from "@/core/agent-benchmark"
+import type { AgentBenchmarkTask } from "@/core/agent-benchmark"
+
+const corpusRoot = join(import.meta.dir, "..", "benchmarks", "corpus")
+
+describe("agent benchmark", () => {
+  it("loads the frozen agent task corpus", async () => {
+    const { loadAgentBenchmarkTasks } = await import("@/core/agent-benchmark")
+    const tasks = loadAgentBenchmarkTasks(corpusRoot)
+    expect(tasks.length).toBeGreaterThanOrEqual(6)
+    expect(tasks[0]!.verify.length).toBeGreaterThan(0)
+  })
+
+  it("grades fileContains and answerContains verifiers", async () => {
+    const { mkdirSync, mkdtempSync, writeFileSync } = await import("node:fs")
+    const { tmpdir } = await import("node:os")
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agentbench-grade-"))
+    mkdirSync(join(root, "src"), { recursive: true })
+    writeFileSync(join(root, "src", "config.ts"), "export const MAX_RETRIES = 5", { flag: "w" })
+    const task: AgentBenchmarkTask = {
+      id: "t",
+      prompt: "p",
+      verify: [
+        { type: "fileContains", path: "src/config.ts", text: "MAX_RETRIES = 5" },
+        { type: "answerContains", text: "five" },
+      ],
+    }
+    const { passed, total } = gradeTask(root, task, "The answer is five.")
+    expect(total).toBe(2)
+    expect(passed).toBe(2)
+  })
+
+  it("runs the synthetic end-to-end benchmark and solves the frozen tasks", async () => {
+    const { runAgentBenchmark } = await import("@/core/agent-benchmark")
+    const runs = await runAgentBenchmark({ corpusRoot, modes: ["lexical"], samples: 1 })
+    expect(runs.length).toBeGreaterThanOrEqual(6)
+    // Every frozen task solves in synthetic mode (the harness drives the real
+    // tools: read, edit, bash).
+    expect(runs.every((run) => run.solved)).toBe(true)
+    // The "update-config" task must actually have edited the file.
+    const update = runs.find((run) => run.taskId === "update-config")
+    expect(update?.passedChecks).toBe(update?.totalChecks)
+    expect(update?.solved).toBe(true)
+  })
+
+  it("summarizes per-mode token usage", async () => {
+    const { runAgentBenchmark, summarizeAgentBenchmarkModes } = await import("@/core/agent-benchmark")
+    const runs = await runAgentBenchmark({ corpusRoot, modes: ["none", "lexical"], samples: 1 })
+    const byMode = summarizeAgentBenchmarkModes(runs)
+    expect(byMode.lexical.solved).toBe(byMode.lexical.total)
+    expect(byMode.none.totalTokens.mean).toBeGreaterThan(0)
+    expect(byMode.lexical.totalTokens.mean).toBeGreaterThan(0)
+  })
+})

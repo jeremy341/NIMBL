@@ -429,7 +429,8 @@ bun test --watch
 
 ### Runtime Boundary
 
-- File tools resolve canonical paths and block project escapes, `.env` files, `.git`, NIMBL state, common credential files, and private-key formats.
+- File tools resolve canonical paths and block protected files (`.env` files, `.git`, NIMBL state, common credential files, and private-key formats) inside or outside the project.
+- Paths **outside** the project are gated by an `external_directory` permission (default `ask`, mirroring opencode): the agent prompts with an "Access external directory" modal offering Allow once / Allow always / Reject. `external_directory` never inherits the global `"*"` rule — it must be explicitly allowed or denied in `.nimbl/settings.json`.
 - Project skills are an explicit narrow exception limited to canonical `.nimbl/skills/<name>/SKILL.md` files. Global skills are read from the OS config `nimbl/skills/<name>/SKILL.md` directory and configured `skills.paths` directories; names are validated before any path is resolved.
 - Approved shell commands are not sandboxed. They execute with the current user's operating-system permissions and may access paths and networks outside the project.
 - Session transcripts, reasoning, tool output, usage, and snapshots are stored as project-local plaintext in `.nimbl`; features that persist new sensitive fields must document retention and deletion behavior.

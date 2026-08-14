@@ -298,9 +298,10 @@ Acceptance criteria:
 
 ### P3-02 Retrieval Ablations
 
-- [ ] Compare no retrieval, lexical, structural, graph, semantic, hybrid, and prompt-cache configurations.
-- [ ] Measure task quality, retrieval precision/recall, tokens, latency, and cost.
-- [ ] Prevent a lower-token result from being called better when quality regresses.
+- [x] Compare no retrieval, lexical, structural, graph, semantic, hybrid, and prompt-cache configurations.
+- [x] End-to-end agent task benchmark (agent-benchmark.ts) runs the full agent against frozen coding tasks and grades task success with ground-truth verifiers.
+- [x] Measure task quality, retrieval precision/recall, tokens, latency, and cost.
+- [x] Prevent a lower-token result from being called better when quality regresses.
 
 ### P3-03 Publish Defensible Claims
 

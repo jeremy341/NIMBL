@@ -439,4 +439,48 @@ describe("OpenCode-derived TUI", () => {
     } finally { setup.renderer.destroy() }
   })
 
+  it("switches the reactive theme palette on setThemeName", async () => {
+    const mod = await import("@/tui-opencode-ui")
+    expect(mod.THEME_NAMES).toEqual(["nimbl", "opencode", "mono"])
+    mod.setThemeName("opencode")
+    expect(mod.currentThemeName()).toBe("opencode")
+    expect(mod.theme.primary).toBe(mod.THEMES.opencode.primary)
+    mod.setThemeName("mono")
+    expect(mod.theme.background).toBe(mod.THEMES.mono.background)
+    mod.setThemeName("nimbl")
+    expect(mod.theme.primaryForeground).toBe(mod.THEMES.nimbl.primaryForeground)
+  })
+
+  it("renders live child activity and completion summary in the delegate card", async () => {
+    const delegate: ChatSession = {
+      ...session,
+      messages: [{
+        id: "assistant-delegate",
+        role: "assistant",
+        text: "",
+        time: 1,
+        completed: 200_000,
+        agent: "build",
+        parts: [{ id: "task-1", type: "tool", tool: "delegate", state: "completed", title: "Child task completed", detail: "Research the retry logic", output: "Summary" }],
+      }],
+    }
+    const activity = {
+      "task-1": {
+        running: false,
+        toolcalls: 3,
+        current: { tool: "read", title: "Read src/core/agent.ts" },
+        duration: "1m 30s",
+      },
+    }
+    const setup = await testRender(() => (
+      <SessionScreen session={delegate} providerLabel="Provider" model="model" cwd="C:/project" loading={false} promptValue="" onPromptInput={() => {}} onPromptSubmit={() => {}} onAbort={() => {}} commands={[]} onCommand={() => {}} onMessageAction={() => {}} sidebarVisible={false} subagentActivity={activity} />
+    ), { width: 120, height: 40 })
+    try {
+      await setup.flush(); await setup.waitForVisualIdle()
+      const frame = setup.captureCharFrame()
+      expect(frame).toContain("Subagent Task — Research the retry logic")
+      expect(frame).toContain("3 toolcalls")
+      expect(frame).toContain("1m 30s")
+    } finally { setup.renderer.destroy() }
+  })
 })

@@ -26,16 +26,25 @@ export interface SessionWithSnapshots extends StoredSession {
 }
 
 export function setDraft<T extends StoredSession>(session: T, draft: string): T {
-  const history = draft === session.draft ? session.draftHistory || [] : [...(session.draftHistory || []), ...(session.draft ? [session.draft] : [])].filter(Boolean).slice(-50)
+  if (draft === session.draft) return session
+  // Record the previous live draft at the tail of history so "next" past the
+  // newest entry can always recover it. Cap at 50.
+  const history = [...(session.draftHistory || []), ...(session.draft ? [session.draft] : [])].filter(Boolean).slice(-50)
   return { ...session, draft, draftHistory: history, updated: Date.now() }
 }
 
 export function navigateDraft<T extends StoredSession>(session: T, direction: "previous" | "next"): T {
-  const history = session.draftHistory || []; if (!history.length) return session
-  const found = session.draft ? history.lastIndexOf(session.draft) : -1
-  const current = found >= 0 ? found : direction === "previous" ? history.length : -1
-  const index = direction === "previous" ? Math.max(0, current - 1) : Math.min(history.length - 1, current + 1)
-  return { ...session, draft: history[index] || "" }
+  const history = session.draftHistory || []
+  if (!history.length) return session
+  // The live draft is recorded as the tail of history (setDraft / onHistory
+  // guarantee it), so navigation always moves within history and "next" past
+  // the newest entry returns to the live draft instead of clearing it.
+  const pos = history.lastIndexOf(session.draft || "")
+  const current = pos >= 0 ? pos : direction === "previous" ? history.length : -1
+  const index = direction === "previous"
+    ? Math.max(0, current - 1)
+    : Math.min(history.length, current + 1)
+  return { ...session, draft: index < history.length ? history[index] || "" : session.draft || "" }
 }
 
 export function stashDraft<T extends StoredSession>(session: T, text = session.draft || ""): T {
@@ -53,7 +62,8 @@ export function queuePrompt<T extends StoredSession>(session: T, text: string, l
 }
 
 export function dequeuePrompt<T extends StoredSession>(session: T): { session: T; prompt?: string } {
-  const [item, ...rest] = session.queuedPrompts || []; return { session: { ...session, queuedPrompts: rest, runState: rest.length ? "queued" : session.runState }, prompt: item?.text }
+  const [item, ...rest] = session.queuedPrompts || []
+  return { session: { ...session, queuedPrompts: rest, runState: rest.length ? "queued" : session.runState === "queued" ? "idle" : session.runState }, prompt: item?.text }
 }
 
 export function setTodos<T extends StoredSession>(session: T, todos: NonNullable<StoredSession["todos"]>): T { return { ...session, todos: todos.slice(0, 100), updated: Date.now() } }
