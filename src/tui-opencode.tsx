@@ -19,6 +19,7 @@ import { NimblBackend } from "@/core/backend"
 import { loadGlobalConfig, saveGlobalConfig } from "@/core/global-config"
 import { EXIT_CONFIRM_WINDOW_MS, registerExitPress } from "@/core/exit-guard"
 import { loadLearning, observeLearning, saveLearning } from "@/core/learning"
+import { classifyTask } from "@/core/task-classifier"
 import { preparePromptContext } from "@/core/prompt-context"
 import { permissionFor } from "@/core/permissions"
 import {
@@ -1031,7 +1032,11 @@ export function App() {
     }
     setSessions((all) => [child, ...all])
     schedulePersist()
-    const task = backend.createTask({ sessionID: childID, parentTaskID: runtime.parentTaskID, kind: "subagent", budget: { maxTokens: Number.POSITIVE_INFINITY } })
+    // Sprint C: a delegated child classifies its own prompt inside the agent, but
+    // is capped by the parent's classified budget so a research child can never
+    // out-spend the run that hired it.
+    const parentPrompt = parent.messages.filter((message) => message.role === "user").at(-1)?.text || ""
+    const task = backend.createTask({ sessionID: childID, parentTaskID: runtime.parentTaskID, kind: "subagent", budget: { maxTokens: Number.POSITIVE_INFINITY, maxSteps: classifyTask(parentPrompt).maxToolSteps } })
     try {
       const result = await backend.runTask({
         taskID: task.id,

@@ -4,8 +4,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const streamText = vi.fn()
+const stepCountIs = vi.fn(() => () => false)
 vi.mock("ai", () => ({
-  stepCountIs: () => () => false,
+  stepCountIs,
   streamText,
   tool: <T>(definition: T) => definition,
 }))
@@ -15,7 +16,10 @@ vi.mock("@ai-sdk/anthropic", () => ({ createAnthropic: () => () => ({}) }))
 import { runAgent, countReadsSinceEdit, pruneOldToolResults } from "@/core/agent"
 
 describe("agent execution", () => {
-  beforeEach(() => streamText.mockReset())
+  beforeEach(() => {
+    streamText.mockReset()
+    stepCountIs.mockClear()
+  })
 
   it("retries a transient failure before producing output", async () => {
     const failure = Object.assign(new Error("rate limited"), { statusCode: 429 })
@@ -753,5 +757,87 @@ describe("agent execution", () => {
       { role: "tool", content: [{ type: "tool-result", toolCallId: "c1", toolName: "read", output: "short" }] },
     ]
     expect(pruneOldToolResults(messages, 6, 200)).toBe(messages)
+  })
+
+  describe("Sprint C per-class step budgets", () => {
+    const base = {
+      root: mkdtempSync(join(tmpdir(), "nimbl-agent-budget-")),
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "build" as const,
+      permissions: { "*": "allow" } as const,
+      requestApproval: async () => "once" as const,
+      onEvent: () => {},
+    }
+    const done = (text: string) => ({
+      fullStream: { async *[Symbol.asyncIterator]() { yield { type: "text-delta", text } } },
+      usage: Promise.resolve({ inputTokens: 5, outputTokens: 1, totalTokens: 6 }),
+      finalStep: Promise.resolve({ finishReason: "stop", rawFinishReason: "stop", callId: "call", response: { id: "response", headers: { "x-request-id": "request" } } }),
+    })
+
+    it("gives a long-horizon prompt the family budget and guidance", async () => {
+      const prompt = "The storefront has several subtle bugs (subtotal math, reservation oversell). Work top-down: audit the domains, fix all of them so the hidden suites pass."
+      streamText.mockReturnValueOnce(done("done"))
+      const result = await runAgent({ ...base, messages: [{ role: "user", text: prompt }] })
+
+      expect(stepCountIs).toHaveBeenLastCalledWith(100)
+      expect(JSON.stringify(streamText.mock.calls[0]?.[0]?.system)).toContain("long-horizon task")
+      expect(result).toMatchObject({ family: "long-horizon", maxToolSteps: 100 })
+    })
+
+    it("caps a classified budget by an explicit maxToolSteps ceiling", async () => {
+      const prompt = "The storefront has several subtle bugs (subtotal math, reservation oversell). Work top-down: audit the domains, fix all of them so the hidden suites pass."
+      streamText.mockReturnValueOnce(done("done"))
+      const result = await runAgent({ ...base, messages: [{ role: "user", text: prompt }], maxToolSteps: 20 })
+
+      expect(stepCountIs).toHaveBeenLastCalledWith(20)
+      expect(result).toMatchObject({ family: "long-horizon", maxToolSteps: 20 })
+    })
+
+    it("keeps easy-family prompts cheap and guidance-free", async () => {
+      const prompt = "applyDiscount in src/domains/pricing/discount.ts divides by 1000 instead of 100. Fix the math so a 10% discount on 100 yields 90."
+      streamText.mockReturnValueOnce(done("done"))
+      await runAgent({ ...base, messages: [{ role: "user", text: prompt }] })
+
+      expect(stepCountIs).toHaveBeenLastCalledWith(12)
+      const system = JSON.stringify(streamText.mock.calls[0]?.[0]?.system)
+      expect(system).not.toContain("long-horizon task")
+      expect(system).not.toContain("This task is driven by running tests")
+    })
+
+    it("honors benchmark ground-truth tags over the prompt text", async () => {
+      streamText.mockReturnValueOnce(done("done"))
+      await runAgent({ ...base, messages: [{ role: "user", text: "fix the math" }], taskTags: ["shell-loop", "bug-fix"] })
+
+      expect(stepCountIs).toHaveBeenLastCalledWith(50)
+    })
+
+    it("shares the classified budget across a step-cap continuation (not a fresh budget)", async () => {
+      const prompt = "There is no unit coverage for money rounding in tests/unit. Write tests/unit/money.test.ts asserting round(2.567, 2) === 2.57, then run the suite."
+      streamText
+        .mockReturnValueOnce({
+          fullStream: {
+            async *[Symbol.asyncIterator]() {
+              yield { type: "reasoning-delta", text: "thinking" }
+              yield { type: "tool-call", toolName: "read", input: { path: "note.txt" }, toolCallId: "call-1" }
+            },
+          },
+          usage: Promise.resolve({ inputTokens: 5, outputTokens: 1, totalTokens: 6 }),
+          finalStep: Promise.resolve({ finishReason: "tool-calls", rawFinishReason: "tool-calls", callId: "call", response: { id: "response", headers: { "x-request-id": "request" } } }),
+          responseMessages: Promise.resolve([
+            { role: "assistant", content: [{ type: "text", text: "I was mid-work" }] },
+            { role: "tool", content: [{ type: "tool-result", toolCallId: "call-1", output: "file content" }] },
+          ]),
+        })
+        .mockReturnValueOnce(done("Finished the fix."))
+
+      const result = await runAgent({ ...base, messages: [{ role: "user", text: prompt }], maxAttempts: 2 })
+
+      // Test-writing family = 16 steps total; attempt 1 consumed 1 tool step, so
+      // attempt 2 is bounded to the remaining 15, not a fresh 16.
+      expect((stepCountIs.mock.calls as unknown as Array<[number]>).map(([budget]) => budget)).toEqual([16, 15])
+      expect(result).toMatchObject({ text: "Finished the fix.", attempts: 2, family: "test-writing", maxToolSteps: 16 })
+    })
   })
 })

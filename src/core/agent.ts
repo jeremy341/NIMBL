@@ -18,6 +18,7 @@ import { fitRequestToBudget, type RequestBudgetBreakdown } from "./request-budge
 import { countTextTokens } from "./tokenizers"
 import { buildCachedPrompt } from "./prompt-cache"
 import { compressContext, type CompressionMode } from "./token-compression"
+import { classifyTask, type TaskFamily } from "./task-classifier"
 import { availableSkillGuidance, discoverSkills, loadSkill, selectRelevantSkills } from "./skills"
 import type { NimblSettings } from "./settings"
 
@@ -85,6 +86,10 @@ export interface AgentRunOptions {
   onRetry?: (retry: { attempt: number; message: string }) => void
   retryDelayMs?: number
   maxToolSteps?: number
+  /** Optional task-category tags (benchmark ground truth) fed to the classifier.
+   * When set, they choose the per-class step budget; otherwise the last user
+   * message is classified lexically. */
+  taskTags?: string[]
   maxAttempts?: number
   maxTokens?: number
   doomLoopThreshold?: number
@@ -133,13 +138,19 @@ export interface AgentRunResult {
   callId?: string
   responseId?: string
   requestId?: string
+  /** Sprint C: family chosen by the task classifier (telemetry only). */
+  family?: TaskFamily
+  /** Effective per-run step budget used by stopWhen (classified, ceiling-clamped). */
+  maxToolSteps?: number
   budget: RequestBudgetBreakdown
   retrieval: ContextRetrievalTelemetry
 }
 
 const MAX_FILE_BYTES = 48_000
 const MAX_SEARCH_FILES = 250
-const MAX_TOOL_STEPS = 12
+// Absolute safety ceiling for runaway loops (Sprint C: the per-class task
+// classifier picks the working budget; this is only the bound on that choice).
+const MAX_TOOL_STEPS = 100
 const MAX_ATTEMPTS = 3
 
 const MODE_TOOLS: Record<AgentMode, readonly PermissionRequest["tool"][]> = {
@@ -716,7 +727,13 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   if (issues.length) throw new Error(`${modelDefinition.name} is incompatible with this request: ${issues.join(", ")}.`)
   const rawHistory = options.messages.slice(-30)
   const splitHistory = rawHistory.map((message) => budgetPromptParts(message.text))
-  const selectedContext = await selectProjectContextWithBudget(options.root, options.messages.at(-1)?.text || "", 12, Math.min(modelDefinition.contextWindow * 4, 500_000), { index: options.contextIndex })
+  // Sprint C: per-class step budget. An explicit maxToolSteps (e.g. a benchmark
+  // forcing 8, or the TaskRegistry's 100-step safety ceiling) is a hard bound on
+  // the classified budget, never a raise: easy tasks keep tiny budgets, only the
+  // long-horizon/shell-loop/multi-file families unlock more turns.
+  const classified = classifyTask(options.messages.at(-1)?.text || "", options.taskTags)
+  const stepBudget = Math.min(classified.maxToolSteps, options.maxToolSteps ?? MAX_TOOL_STEPS)
+  const selectedContext = await selectProjectContextWithBudget(options.root, options.messages.at(-1)?.text || "", classified.retrievalLimit, Math.min(modelDefinition.contextWindow * 4, 500_000), { index: options.contextIndex })
   const skillGuidance = availableSkillGuidance(selectRelevantSkills(
     discoverSkills(options.root, options.settings).filter((skill) => permissionFor(options.permissions, { tool: "skill", target: skill.name }) !== "deny"),
     options.messages.at(-1)?.text || "",
@@ -725,6 +742,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     "You are NIMBL, a token-efficient coding companion. Work inside the current project using tools before making claims about its code.",
     ASSISTANT_RESPONSE_STYLE,
     modePrompt(options.mode),
+    ...(classified.guidance ? [classified.guidance] : []),
     "Use read, glob, grep, and project-local skills selectively. Keep tool output focused. Use todowrite for multi-step work. Use question only when a user decision is necessary. Use edit for focused changes, write for new or whole-file content, and apply_patch only for a valid unified diff.",
     "After editing or changing code, verify the change by running the relevant test or check before finishing (e.g. bun test <file>); if the check is red, read the output and iterate. Do not loop on reads without acting: investigate just enough to edit, then edit and verify.",
     "When a task asks for a concrete value from the code (a constant, a numeric answer, a function name), read the relevant file and answer from its actual contents before replying; never answer with an unverified number or guess.",
@@ -769,6 +787,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   let reasoning = ""
   const startedAt = Date.now()
   const maxAttempts = options.maxAttempts ?? MAX_ATTEMPTS
+  // Sprint C shared task budget: tool steps executed across *all* attempts count
+  // toward the classified budget, so a step-cap continuation gets `remaining`
+  // steps, not a fresh full budget (Kimi: attempts ≠ steps). Transient provider
+  // retries do not consume it — their tool calls never execute into the stream.
+  let executedToolSteps = 0
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     attemptActivity = false
     // Step-cap continuation replays the same user goal with accumulated tool
@@ -819,7 +842,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           }
           return {}
         },
-        stopWhen: stepCountIs(Math.min(MAX_TOOL_STEPS, options.maxToolSteps ?? MAX_TOOL_STEPS)),
+        stopWhen: stepCountIs(Math.max(1, stepBudget - executedToolSteps)),
         abortSignal: options.abortSignal,
       })
       for await (const part of result.fullStream) {
@@ -827,6 +850,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           throw describeStreamError((part as { error?: unknown }).error, options.provider, options.model)
         }
         if (part.type === "tool-call") {
+          executedToolSteps++
           const call = part as unknown as { toolName?: string; input?: unknown; args?: unknown }
           const fingerprint = JSON.stringify([call.toolName, call.input ?? call.args])
           const count = (repeatedToolCalls.get(fingerprint) || 0) + 1
@@ -907,6 +931,8 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         callId: finalStep?.callId,
         responseId: finalStep?.response.id,
         requestId: finalStep?.response.headers?.["x-request-id"],
+        family: classified.family,
+        maxToolSteps: stepBudget,
         budget: fitted.budget,
         retrieval: selectedContext.telemetry,
       }

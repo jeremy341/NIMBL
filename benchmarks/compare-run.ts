@@ -1,6 +1,6 @@
 import { join } from "node:path"
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
-import { runAgentBenchmark, summarizeAgentBenchmarkModes, type AgentBenchmarkRun } from "../src/core/agent-benchmark"
+import { runAgentBenchmark, summarizeAgentBenchmarkModes, summarizeAgentBenchmarkFamilies, type AgentBenchmarkRun } from "../src/core/agent-benchmark"
 import { runOpencodeBenchmark } from "../src/core/opencode-benchmark"
 import { registerCustomProvider } from "../src/core/providers"
 import { appendBenchmarkRecords, benchmarkMetadata } from "../src/core/benchmark"
@@ -77,6 +77,7 @@ for (const run of opencodeRuns) {
 }
 
 const nimblByMode = summarizeAgentBenchmarkModes(nimblRuns)
+const nimblByFamily = summarizeAgentBenchmarkFamilies(nimblRuns)
 const opencodeSolved = opencodeRuns.filter((run) => run.solved).length
 const opencodeTotal = opencodeRuns.length
 const ocTokens = opencodeRuns.reduce((sum, run) => sum + run.totalTokens, 0)
@@ -88,12 +89,18 @@ const headToHead = {
   modes: nimblModes,
   samples,
   nimblByMode,
+  nimblByFamily,
   opencode: { solved: opencodeSolved, total: opencodeTotal, totalTokens: ocTokens, referenceCostUsd: ocCost, runs: opencodeRuns },
   nimblRuns,
 }
 writeFileSync(join(resultsDir, `head-to-head-${runTag}.json`), JSON.stringify(headToHead, null, 2), "utf8")
 console.log(`Raw results written to:\n  ${rawNimblRoot}\n  ${rawOpenCodeRoot}\n  ${nimblRecordsFile}\n  head-to-head-${runTag}.json`)
-console.log(JSON.stringify({ meta, nimblByMode, opencode: { solved: opencodeSolved, total: opencodeTotal, totalTokens: ocTokens, referenceCostUsd: ocCost } }, null, 2))
+console.log(JSON.stringify({ meta, nimblByMode, nimblByFamily, opencode: { solved: opencodeSolved, total: opencodeTotal, totalTokens: ocTokens, referenceCostUsd: ocCost } }, null, 2))
+console.log("\n=== Per-family (Sprint C per-class budgets) ===")
+for (const family of Object.keys(nimblByFamily)) {
+  const f = nimblByFamily[family]!
+  console.log(`  ${family}: solved=${f.solved}/${f.total} avgTokens=${Math.round(f.totalTokens.mean)} avgSteps=${Math.round(f.toolSteps.mean)} budget=${f.maxToolSteps} steps`)
+}
 console.log("\n=== Head-to-head (per task) ===")
 const ocByTask = new Map(opencodeRuns.map((run) => [run.taskId, run]))
 for (const mode of nimblModes) {

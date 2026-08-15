@@ -86,18 +86,29 @@
 > This is the direct answer to "isn't 8 turns why NIMBL is cheap?" — yes, so we keep it for the
 > tasks where it's appropriate.
 
-- [ ] **C.1 Task-classifier** — new `src/core/task-classifier.ts`: lexical/symbol classifier maps
+- [x] **C.1 Task-classifier** — `src/core/task-classifier.ts`: lexical/symbol classifier maps
   the prompt (+ optional task `tags`) to a family and a budget:
-  `{retrieval:8, single-fix:12, test-writing:16, multi-file:40, shell-loop:50, long-horizon:100}`.
-  Zero extra LLM calls. *(BRAINSTORM #1)*
-- [ ] **C.2 Wire classifier into agent** — `agent.ts:737` uses the classified `maxToolSteps`
-  instead of `Math.min(MAX_TOOL_STEPS=12, …)`; raise `MAX_TOOL_STEPS` to ~60 only as the
-  *absolute safety ceiling* for runaway, keeping per-class defaults small. Production default
-  (tasks.ts `maxSteps: 100`) now actually applies instead of being clamped to 12.
-- [ ] **C.3 Wire classifier into benchmark** — `agent-benchmark.ts:496,532` pass the per-task
-  budget (from `task.tags`) instead of flat 8.
-- [ ] **C.4 Decouple attempts from steps** — transient 429/5xx/timeout retries must NOT consume
-  the step budget (Kimi `max_attempts_per_step`). — **SAFE**.
+  `{retrieval:8, single-fix:12, test-writing:16, delegation:16, multi-file:40, shell-loop:50, long-horizon:100}`.
+  Zero extra LLM calls. Retrieval limit widens 12→16 only for multi-file/long-horizon;
+  per-family guidance is injected for the three corrective-behavior families.
+  `classifyTask(prompt, tags?)` falls back to `single-fix/12` (status-quo-safe).
+  *(BRAINSTORM #1)*
+- [x] **C.2 Wire classifier into agent** — `agent.ts` runs `classifyTask(last user text, taskTags)`
+  once, then `stepBudget = Math.min(classified.maxToolSteps, options.maxToolSteps ?? MAX_TOOL_STEPS)`
+  — an explicit `maxToolSteps` is a hard ceiling on the classified budget, never a raise.
+  `MAX_TOOL_STEPS = 100` is now only the absolute runaway safety ceiling. Production default
+  (tasks.ts `maxSteps: 100`) no longer clamps classified budgets to 12.
+- [x] **C.3 Wire classifier into benchmark** — `agent-benchmark.ts` passes `task.tags` to the
+  parent (single source of truth) and the child's budget is
+  `min(classify(child prompt), classify(parent prompt, tags))` instead of flat 8. Runs and
+  JSONL records carry `family` + `maxToolSteps`; compare-run prints a per-family table
+  (solved/tokens/steps/budget) so the token claim restates per category.
+- [x] **C.4 Decouple attempts from steps** — `executedToolSteps` counts only `tool-call` parts,
+  so transient 429/5xx/timeout retries inside an attempt never consume the budget. Step-cap
+  continuations share the task budget (16 → 15, not a fresh 16).
+- [x] **C.5 Delegate + TUI child caps** — core `delegate()` children classify their own prompt
+  (capped by `options.maxToolSteps`); TUI `runSubagent` children are capped by the parent
+  session's classified budget (`classifyTask(parent last user message).maxToolSteps`).
 
 **Honest metric note:** raising solve-rate on lh/mf/sh will raise NIMBL's *per-solved average*
 from ~26k toward ~30–35k (adding solved hard tasks). opencode is 46.8k, so the claim stays

@@ -8,6 +8,7 @@ import { createProjectContextIndex, type ProjectContextIndex } from "./context"
 import { estimateReferenceCost } from "./api"
 import { catalogPrice, estimateProviderCost } from "./pricing"
 import { customProviderID, defaultModelFor, providerApiKey, resolveModel, type ProviderModel } from "./providers"
+import { classifyTask } from "./task-classifier"
 
 export type AgentBenchmarkMode = "none" | "lexical" | "hybrid" | "prompt-cache"
 
@@ -85,6 +86,10 @@ export interface AgentBenchmarkRun {
   attempts: number
   toolSteps: number
   finishReason?: string
+  /** Sprint C: task family chosen by the classifier (telemetry only). */
+  family?: string
+  /** Sprint C: effective per-run step budget (classified, ceiling-clamped). */
+  maxToolSteps?: number
   retrievalTokens: number
   retrievalCandidates: number
   answer: string
@@ -341,7 +346,7 @@ interface BenchmarkShared {
 }
 
 type FailedRun = { ok: false; message: string }
-type OkRun = { ok: true; text: string; usage: AgentRunResult["usage"]; attempts: number; latencyMs: number; finishReason?: string; budget: AgentRunResult["budget"]; retrieval: AgentRunResult["retrieval"] }
+type OkRun = { ok: true; text: string; usage: AgentRunResult["usage"]; attempts: number; latencyMs: number; finishReason?: string; family?: string; maxToolSteps?: number; budget: AgentRunResult["budget"]; retrieval: AgentRunResult["retrieval"] }
 
 /** Run items through a bounded worker pool, preserving completion order only per-item. */
 async function runWithConcurrency<T>(items: readonly T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
@@ -493,7 +498,10 @@ async function runBenchmarkItem(shared: BenchmarkShared, item: BenchmarkWorkItem
           onEvent: (event) => childEvents.push(event),
           streamTextOverride: live ? undefined : shared.synthetic(task, mode),
           beforeRequest: live ? () => shared.limiter.waitForToken() : undefined,
-          maxToolSteps: 8,
+          // Sprint C: a delegated child classifies its own prompt, but its budget
+          // is capped by the parent task's per-class budget so a research child
+          // can never out-spend the run that hired it.
+          maxToolSteps: Math.min(classifyTask(request.prompt).maxToolSteps, classifyTask(task.prompt, task.tags).maxToolSteps),
           maxAttempts: live ? 5 : undefined,
           retryDelayMs: live ? 2_000 : undefined,
         })
@@ -529,14 +537,17 @@ async function runBenchmarkItem(shared: BenchmarkShared, item: BenchmarkWorkItem
       delegateTask,
       streamTextOverride: live ? undefined : shared.synthetic(task, mode),
       beforeRequest: live ? () => shared.limiter.waitForToken() : undefined,
-      maxToolSteps: 8,
+      // Sprint C: no flat 8-step cap — the classifier picks the per-task family
+      // budget from the cohort's ground-truth tags (single source of truth: the
+      // same code path production uses).
+      taskTags: task.tags,
       maxAttempts: live ? 5 : undefined,
       retryDelayMs: live ? 2_000 : undefined,
     }
     // Wait for any in-flight cooldown opened by another parallel worker before
     // issuing a request, so backoffs are shared rather than additive.
     await shared.gate.waitIfOpen()
-    outcome = await runAgent(agentOptions).then((result): OkRun => ({ ok: true, text: result.text, usage: result.usage, attempts: result.attempts, latencyMs: result.latencyMs, finishReason: result.finishReason, budget: result.budget, retrieval: result.retrieval })).catch((error): FailedRun => ({ ok: false, message: error instanceof Error ? error.message : String(error) }))
+    outcome = await runAgent(agentOptions).then((result): OkRun => ({ ok: true, text: result.text, usage: result.usage, attempts: result.attempts, latencyMs: result.latencyMs, finishReason: result.finishReason, family: result.family, maxToolSteps: result.maxToolSteps, budget: result.budget, retrieval: result.retrieval })).catch((error): FailedRun => ({ ok: false, message: error instanceof Error ? error.message : String(error) }))
     if (outcome.ok || runAttempt === maxRunAttempts) break
     // Transient provider outage (5xx/429/network). Trip the shared gate so other
     // parallel workers back off too, wait, then retry the whole run on a fresh
@@ -596,6 +607,8 @@ async function runBenchmarkItem(shared: BenchmarkShared, item: BenchmarkWorkItem
     attempts: failed ? 0 : finalOutcome.attempts,
     toolSteps: toolEvents.length,
     finishReason: failed ? undefined : finalOutcome.finishReason,
+    family: failed ? undefined : finalOutcome.family,
+    maxToolSteps: failed ? undefined : finalOutcome.maxToolSteps,
     retrievalTokens,
     retrievalCandidates: !failed && Array.isArray(finalOutcome.retrieval?.candidates) ? finalOutcome.retrieval.candidates.length : 0,
     answer,
@@ -661,6 +674,49 @@ export function summarizeAgentBenchmarkModes(runs: AgentBenchmarkRun[]): Record<
       referenceCostUsd: varianceSummary(modeRuns.map((run) => run.referenceCostUsd)),
       latencyMs: varianceSummary(modeRuns.map((run) => run.latencyMs)),
       runs: modeRuns.length,
+    }
+  }
+  return summary
+}
+
+export interface AgentBenchmarkFamilySummary {
+  family: string
+  solved: number
+  total: number
+  totalTokens: VarianceSummary
+  referenceCostUsd: VarianceSummary
+  latencyMs: VarianceSummary
+  toolSteps: VarianceSummary
+  maxToolSteps: number
+  runs: number
+}
+
+/**
+ * Per-family aggregation (Sprint C). Family comes from the run record; older
+ * records fall back to the cohort tags so historical runs stay comparable.
+ * This is what lets the token claim be restated per category instead of as
+ * one headline number.
+ */
+export function summarizeAgentBenchmarkFamilies(runs: AgentBenchmarkRun[]): Record<string, AgentBenchmarkFamilySummary> {
+  const byFamily = new Map<string, AgentBenchmarkRun[]>()
+  for (const run of runs) {
+    const family = run.family ?? classifyTask("", run.tags).family
+    const bucket = byFamily.get(family)
+    if (bucket) bucket.push(run)
+    else byFamily.set(family, [run])
+  }
+  const summary: Record<string, AgentBenchmarkFamilySummary> = {}
+  for (const [family, familyRuns] of byFamily) {
+    summary[family] = {
+      family,
+      solved: familyRuns.filter((run) => run.solved).length,
+      total: familyRuns.length,
+      totalTokens: varianceSummary(familyRuns.map((run) => run.totalTokens)),
+      referenceCostUsd: varianceSummary(familyRuns.map((run) => run.referenceCostUsd)),
+      latencyMs: varianceSummary(familyRuns.map((run) => run.latencyMs)),
+      toolSteps: varianceSummary(familyRuns.map((run) => run.toolSteps)),
+      maxToolSteps: Math.round(familyRuns.reduce((total, run) => total + (run.maxToolSteps ?? 0), 0) / familyRuns.length),
+      runs: familyRuns.length,
     }
   }
   return summary

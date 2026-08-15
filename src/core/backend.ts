@@ -18,6 +18,7 @@ import {
 import { findSession, latestSession } from "./session-lifecycle"
 import { defaultModelFor, modelContextWindow, type ProviderDefinition } from "./providers"
 import { runAgent, type AgentEvent, type AgentMessage, type AgentRunOptions, type AgentRunResult } from "./agent"
+import { classifyTask } from "./task-classifier"
 import { reduceAssistantEvents } from "./transcript"
 import { effectiveAgent, effectivePermissions, type AgentConfigInput, type AgentDefinition } from "./agent-config"
 import { exportSession, writeSessionExport, type ExportOptions } from "./export"
@@ -229,7 +230,9 @@ export class NimblBackend {
     try {
       // Delegated agents are not capped by an aggregate NIMBL token budget. The
       // provider's context/output window and the step/depth guards remain active.
-      const task = this.createTask({ sessionID: child.id, parentTaskID: options.runID, kind: "subagent", budget: { maxTokens: Number.POSITIVE_INFINITY, maxSteps: options.maxToolSteps } })
+      // Sprint C: the child's step budget defaults to the classified family budget
+      // of its prompt (an explicit maxToolSteps — e.g. from the TUI - caps it).
+      const task = this.createTask({ sessionID: child.id, parentTaskID: options.runID, kind: "subagent", budget: { maxTokens: Number.POSITIVE_INFINITY, maxSteps: options.maxToolSteps ?? classifyTask(options.messages.at(-1)?.text || "").maxToolSteps } })
       const result = await this.runTask({ ...options, taskID: task.id, parentTaskID: options.runID, messages: options.messages, runID: task.id, maxTokens: undefined, onEvent: (event) => events.push(event) })
       store.sessions[indexed] = {
         ...store.sessions[indexed]!,
