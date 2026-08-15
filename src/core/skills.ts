@@ -230,6 +230,28 @@ export function availableSkillGuidance(skills: SkillSummary[]): string {
   return lines.join("\n")
 }
 
+/**
+ * Lexical (BM25-flavoured) relevance selection for the available-skills block.
+ * Scores each skill by how many prompt terms appear in its name + description,
+ * keeping only the most relevant `limit` (default 6). This trims the guidance
+ * block to the skills likely to match the current task instead of listing the
+ * whole catalog — a pure token reduction that never hides a loaded skill.
+ * When no skill matches, the first `limit` (alphabetical) are kept so the
+ * guidance is never empty.
+ */
+export function selectRelevantSkills(skills: SkillSummary[], prompt: string, limit = 6): SkillSummary[] {
+  if (!skills.length || !prompt.trim()) return skills.slice(0, limit)
+  const terms = prompt.toLowerCase().split(/[^a-z0-9_]+/).filter((term) => term.length > 2)
+  if (!terms.length) return skills.slice(0, limit)
+  const scored = skills.map((skill) => {
+    const haystack = `${skill.name} ${skill.description ?? ""}`.toLowerCase()
+    const score = terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0)
+    return { skill, score }
+  })
+  scored.sort((left, right) => right.score - left.score || left.skill.name.localeCompare(right.skill.name))
+  return scored.slice(0, limit).map(({ skill }) => skill)
+}
+
 export function ensureSkillDirectory(root: string) {
   const directory = projectSkillsDir(root)
   mkdirSync(directory, { recursive: true })

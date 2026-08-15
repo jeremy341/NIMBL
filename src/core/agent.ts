@@ -7,7 +7,7 @@ import { z } from "zod"
 import { compatibilityIssues, getProvider, resolveModel, type ProviderModel } from "./providers"
 import { selectProjectContextWithBudget, type ProjectContextIndex } from "./context"
 import type { ContextRetrievalTelemetry } from "./context"
-import { teachingPrompt, type LearningState } from "./learning"
+import { leakageLabel, leakageScore, teachingPrompt, type LearningState } from "./learning"
 import type { PermissionSettings } from "./settings"
 import { permissionExplanation, permissionFor } from "./permissions"
 import { ASSISTANT_RESPONSE_STYLE, stripEmojis } from "./response-style"
@@ -18,7 +18,7 @@ import { fitRequestToBudget, type RequestBudgetBreakdown } from "./request-budge
 import { countTextTokens } from "./tokenizers"
 import { buildCachedPrompt } from "./prompt-cache"
 import { compressContext, type CompressionMode } from "./token-compression"
-import { availableSkillGuidance, discoverSkills, loadSkill } from "./skills"
+import { availableSkillGuidance, discoverSkills, loadSkill, selectRelevantSkills } from "./skills"
 import type { NimblSettings } from "./settings"
 
 export type AgentMode = "build" | "plan" | "explain" | "learn"
@@ -268,6 +268,43 @@ export function countReadsSinceEdit(toolCallsPerStep: string[][]): number {
   return reads
 }
 
+/**
+ * Conditional tool-result pruning (Hermes phase-1 style): stub long, old,
+ * completed tool-result outputs so they no longer re-enter the next step's
+ * context. Tail-protected — the most recent `tail` tool messages keep their
+ * output verbatim; only older `tool` messages with an output longer than
+ * `minChars` are replaced with a short marker. `edit`/`apply_patch` outputs
+ * (diffs) and error outputs are never stubbed. No LLM call is made.
+ * Returns the same array reference when nothing changed.
+ */
+export function pruneOldToolResults(messages: readonly unknown[], tail = 6, minChars = 200): unknown[] {
+  const toolIndices = messages
+    .map((message, index) => (message && typeof message === "object" && (message as { role?: string }).role === "tool" ? index : -1))
+    .filter((index) => index >= 0)
+  if (toolIndices.length <= tail) return messages as unknown[]
+  let changed = false
+  const next = messages.map((message, index) => {
+    if (!toolIndices.includes(index)) return message
+    if (toolIndices.indexOf(index) >= toolIndices.length - tail) return message
+    const content = (message as { content?: unknown }).content
+    if (!Array.isArray(content)) return message
+    const parts = content.map((part) => {
+      if (!part || typeof part !== "object" || (part as { type?: string }).type !== "tool-result") return part
+      const output = (part as { output?: unknown }).output
+      const text = typeof output === "string" ? output : output === undefined ? "" : JSON.stringify(output)
+      if (text.length <= minChars) return part
+      const toolName = (part as { toolName?: string }).toolName || "tool"
+      // Never stub edit/apply_patch diffs or error outputs.
+      if (toolName === "edit" || toolName === "apply_patch" || toolName === "write") return part
+      if (/^Error:/i.test(text)) return part
+      changed = true
+      return { ...(part as object), output: `[Old ${toolName} output cleared to save context space (${text.length} chars)]` } as unknown
+    })
+    return { ...(message as object), content: parts } as unknown
+  })
+  return changed ? next : (messages as unknown[])
+}
+
 function wait(ms: number, signal?: AbortSignal) {
   if (signal?.aborted) return Promise.reject(new Error("Interrupted by user."))
   return new Promise<void>((resolve, reject) => {
@@ -352,6 +389,19 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   let attemptActivity = false
   const repeatedToolCalls = new Map<string, number>()
   const allowedRepeatedCalls = new Set<string>()
+  // Read-to-edit budget state (hard gate): counts read-only tool calls since the
+  // last edit/write/apply_patch/bash. Once it reaches the budget the `read` tool
+  // refuses file content and returns a directive instead, forcing act-over-audit.
+  let readsSinceEdit = 0
+  // Edits made since the last bash run, used only to phrase the gate message with
+  // a verify nudge (A.4); the read gate itself does not require a test per edit.
+  let pendingEdits = 0
+  const readGateBudget = options.readBudget ?? 12
+  const enforceReadGate = options.mode === "build"
+  const gateDirective = () => {
+    const verifyNote = pendingEdits > 0 ? ` You have ${pendingEdits} unverified edit(s) since the last command run; run the relevant test (bash) to verify them before continuing to read.` : ""
+    return `Investigation budget reached: ${readsSinceEdit} read-only tool calls since the last edit with no file change. Make the focused edit now and verify it, or stop investigating and answer directly. Do not issue further reads without acting.${verifyNote}`
+  }
   const emitTool = (event: Omit<ToolEvent, "kind">) => {
     attemptActivity = true
     options.onEvent({ kind: "tool", ...event })
@@ -402,9 +452,18 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       execute: async ({ path, startLine, endLine }) => {
         const event = toolID(); emitTool({ id: event, tool: "read", state: "running", title: "Read " + path, path })
         try {
+          // Hard read-to-edit gate: refuse content once the investigation budget
+          // is exhausted without any edit. The model cannot audit forever; it must
+          // edit (or answer) before more reads are allowed.
+          if (enforceReadGate && readsSinceEdit >= readGateBudget) {
+            const directive = gateDirective()
+            emitTool({ id: event, tool: "read", state: "completed", title: "Read blocked by investigation budget", path, output: directive })
+            return directive
+          }
           const target = resolvePathAllowExternal(options.root, path)
           await approveExternal(target, event)
           await approve("read", "Read " + target.rel, "Read this file.", undefined, target.rel, event)
+          readsSinceEdit++
           const size = statSync(target.full).size
           if (size > MAX_FILE_BYTES * 8) return `Error: File is ${size} bytes, exceeding the read limit. Use bash to inspect it in parts.`
           const lines = readFileSync(target.full, "utf8").split("\n")
@@ -422,6 +481,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         const event = toolID(); emitTool({ id: event, tool: "glob", state: "running", title: "Find " + pattern })
         try {
           await approve("glob", "Find " + pattern, "Search project file names.", undefined, pattern, event)
+          readsSinceEdit++
           const files: string[] = []
           for await (const match of new Bun.Glob(pattern).scan({ cwd: options.root, onlyFiles: true })) {
             if (!match.includes("node_modules/") && !match.includes(".git/")) {
@@ -442,6 +502,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         const event = toolID(); emitTool({ id: event, tool: "grep", state: "running", title: "Search " + query })
         try {
           await approve("grep", "Search " + query, "Search text in project files.", undefined, query, event)
+          readsSinceEdit++
           const regex = new RegExp(query, "i")
           const matches: string[] = []
           let seen = 0
@@ -484,6 +545,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           await approve("write", "Write " + target.rel, "Create or replace this file.", diff, target.rel, event)
           mkdirSync(dirname(target.full), { recursive: true })
           writeFileSync(target.full, content, "utf8")
+          readsSinceEdit = 0; pendingEdits++
           options.onFileChange?.({ path: target.rel, before, after: content, beforeExists, afterExists: true })
           emitTool({ id: event, tool: "write", state: "completed", title: "Wrote " + target.rel, path: target.rel, diff })
           return "Wrote " + target.rel
@@ -506,6 +568,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           emitTool({ id: event, tool: "edit", state: "running", title: "Edit " + target.rel, path: target.rel, diff })
           await approve("edit", "Edit " + target.rel, "Apply this text replacement.", diff, target.rel, event)
           writeFileSync(target.full, after, "utf8")
+          readsSinceEdit = 0; pendingEdits++
           options.onFileChange?.({ path: target.rel, before, after, beforeExists: true, afterExists: true })
           emitTool({ id: event, tool: "edit", state: "completed", title: "Edited " + target.rel, path: target.rel, diff })
           return "Edited " + target.rel
@@ -535,6 +598,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           })
           if (options.onFileChanges) options.onFileChanges(changes)
           else for (const change of changes) options.onFileChange?.(change)
+          readsSinceEdit = 0; pendingEdits++
           emitTool({ id: event, tool: "apply_patch", state: "completed", title: "Applied patch", detail: paths.join(", "), diff: clip(patch, 12_000) })
           return "Applied patch to " + paths.join(", ")
         } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "apply_patch", state: "rejected", title: "Apply patch", detail: message }); return "Error: " + message }
@@ -548,6 +612,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         try {
           await approve("bash", "Run command", command, undefined, command, event)
           const result = await runShellCommand(command, options.root, { signal: options.abortSignal })
+          readsSinceEdit = 0; pendingEdits = 0
           const state = result.code === 0 ? "completed" : "failed"
           emitTool({ id: event, tool: "bash", state, title: "Command exited " + result.code, detail: command, output: result.output })
           return "Exit code " + result.code + "\n" + result.output
@@ -652,7 +717,10 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   const rawHistory = options.messages.slice(-30)
   const splitHistory = rawHistory.map((message) => budgetPromptParts(message.text))
   const selectedContext = await selectProjectContextWithBudget(options.root, options.messages.at(-1)?.text || "", 12, Math.min(modelDefinition.contextWindow * 4, 500_000), { index: options.contextIndex })
-  const skillGuidance = availableSkillGuidance(discoverSkills(options.root, options.settings).filter((skill) => permissionFor(options.permissions, { tool: "skill", target: skill.name }) !== "deny"))
+  const skillGuidance = availableSkillGuidance(selectRelevantSkills(
+    discoverSkills(options.root, options.settings).filter((skill) => permissionFor(options.permissions, { tool: "skill", target: skill.name }) !== "deny"),
+    options.messages.at(-1)?.text || "",
+  ))
   const systemInstructions = [
     "You are NIMBL, a token-efficient coding companion. Work inside the current project using tools before making claims about its code.",
     ASSISTANT_RESPONSE_STYLE,
@@ -683,13 +751,18 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     outputReservation: Math.min(8_000, modelDefinition.maxOutputTokens),
   })
   if (!fitted.budget.fits) throw new Error(`Request requires ${fitted.budget.requestTotal} tokens but ${modelDefinition.name} supports ${modelDefinition.contextWindow}. Reduce attachments or choose a larger model.`)
-  const history = rawHistory.slice(rawHistory.length - fitted.history.length).map((message) => ({ role: message.role, content: message.text }))
+  let history = rawHistory.slice(rawHistory.length - fitted.history.length).map((message) => ({ role: message.role, content: message.text }))
   const retrievalText = fitted.retrieval.length ? `Relevant project context (${fitted.budget.retrieval} ${fitted.budget.quality === "exact" ? "tokens" : "estimated tokens"}; selected locally):\n${[...fitted.retrieval].reverse().join("\n\n")}` : ""
   const cachedPrompt = buildCachedPrompt({
     provider: getProvider(options.provider),
     enabled: options.promptCache,
-    stable: [...systemInstructions, projectInstructionText, options.summary ? "Session summary:\n" + options.summary : ""],
-    dynamic: [retrievalText],
+    // Stable prefix: system instructions + project instructions only. The
+    // session summary is deliberately EXCLUDED from the cached prefix because
+    // it changes on compaction — caching it would invalidate the provider cache
+    // prefix mid-session (TokenPilot / "Don't break the cache"). It rides in the
+    // dynamic tail instead, which sits after the cache breakpoint.
+    stable: [...systemInstructions, projectInstructionText],
+    dynamic: [options.summary ? "Session summary:\n" + options.summary : "", retrievalText],
   })
 
   let text = ""
@@ -698,6 +771,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   const maxAttempts = options.maxAttempts ?? MAX_ATTEMPTS
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     attemptActivity = false
+    // Step-cap continuation replays the same user goal with accumulated tool
+    // history; per-attempt text/reasoning must reset so the final answer is the
+    // continuation's, not a concatenation of partial outputs.
+    text = ""
+    reasoning = ""
     // Repetition counters are per attempt: a retry replays the same tool
     // sequence, which must not count toward a doom-loop from the prior attempt.
     repeatedToolCalls.clear()
@@ -719,6 +797,13 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           // Shared benchmark rate limiter: gates every model request (the SDK
           // invokes prepareStep once per tool step, before each internal call).
           if (options.beforeRequest) await options.beforeRequest()
+          // B.2 Conditional tool-result pruning: long-horizon runs accumulate many
+          // tool messages; once the step history grows, stub old completed outputs
+          // (tail-protected, diffs/errors kept) so they stop re-entering context.
+          if (messages.length > 24) {
+            const pruned = pruneOldToolResults(messages)
+            if (pruned !== messages) return { messages: pruned as any }
+          }
           const dynamicTokens = countTextTokens(JSON.stringify({ instructions, messages }), modelDefinition).tokens
           const projected = dynamicTokens + fitted.budget.toolSchemas + fitted.budget.outputReservation + fitted.budget.safetyMargin
           if (projected > modelDefinition.contextWindow) throw new Error(`Tool-loop context reached ${projected} tokens, above ${modelDefinition.name}'s ${modelDefinition.contextWindow}-token window.`)
@@ -779,6 +864,28 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       const outputDetails = usage.outputTokenDetails || {}
       const finalStep = result.finalStep ? await result.finalStep : undefined
       if (!text && reasoning) text = reasoning
+      // A.3 Step-cap continuation: the SDK cut the loop at the tool-step limit
+      // while the model was mid-work (finishReason "tool-calls"). That is not a
+      // thrown error, so the retry loop never re-arms. Append the accumulated
+      // assistant/tool messages plus a one-line continuation prompt and retry,
+      // bounded by maxAttempts. Only fires on real activity, never on clean stops.
+      if (finalStep?.finishReason === "tool-calls" && attemptActivity && attempt < maxAttempts && !options.abortSignal?.aborted) {
+        let continuedMessages: unknown[] = []
+        try {
+          const responseMessages = await result.responseMessages
+          if (Array.isArray(responseMessages)) continuedMessages = responseMessages
+        } catch { /* responseMessages unavailable (e.g. synthetic override) — continue with history only */ }
+        if (continuedMessages.length) history = [...history, ...continuedMessages] as typeof history
+        history = [...history, { role: "user", content: "You ran out of tool steps mid-task. Finish the remaining work now with as few additional tool calls as possible, then give your final answer." }]
+        continue
+      }
+      // B.5 Leakage-aware learn mode: when teaching (learn mode), score whether
+      // the final text revealed the answer outright instead of guiding. Heuristic
+      // only — no extra LLM call; surfaced as an observable task event.
+      if (options.mode === "learn" && text) {
+        const score = leakageScore(text)
+        options.onTaskEvent?.({ type: "budget", detail: `learning leakage=${score.toFixed(2)} (${leakageLabel(score)})` })
+      }
       return {
         text,
         reasoning,

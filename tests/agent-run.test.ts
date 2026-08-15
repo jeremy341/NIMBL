@@ -12,7 +12,7 @@ vi.mock("ai", () => ({
 vi.mock("@ai-sdk/openai", () => ({ createOpenAI: () => Object.assign(() => ({}), { chat: () => ({}), responses: () => ({}) }) }))
 vi.mock("@ai-sdk/anthropic", () => ({ createAnthropic: () => () => ({}) }))
 
-import { runAgent, countReadsSinceEdit } from "@/core/agent"
+import { runAgent, countReadsSinceEdit, pruneOldToolResults } from "@/core/agent"
 
 describe("agent execution", () => {
   beforeEach(() => streamText.mockReset())
@@ -559,5 +559,199 @@ describe("agent execution", () => {
     ])).toBe(2)
     expect(countReadsSinceEdit([["edit"], ["edit"]])).toBe(0)
     expect(countReadsSinceEdit([])).toBe(0)
+  })
+
+  it("hard-blocks reads once the investigation budget is exhausted", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-gate-"))
+    writeFileSync(join(root, "note.txt"), "content")
+    writeFileSync(join(root, "note2.txt"), "content2")
+    let readOutput = ""
+
+    streamText.mockImplementationOnce((config: any) => ({
+      fullStream: {
+        async *[Symbol.asyncIterator]() {
+          const outputs = []
+          for (let i = 0; i < 14; i++) {
+            // Sequential calls (a new step each) let the counter accumulate; a
+            // real audit loop reads across steps, not within one parallel burst.
+            outputs.push(await config.tools.read.execute({ path: i % 2 ? "note2.txt" : "note.txt" }))
+          }
+          readOutput = outputs.join("\n")
+          yield { type: "text-delta", text: "done" }
+        },
+      },
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    }))
+
+    const result = await runAgent({
+      root,
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "build",
+      messages: [{ role: "user", text: "read files" }],
+      permissions: { "*": "allow" },
+      requestApproval: async () => "once",
+      onEvent: () => {},
+      readBudget: 10,
+    })
+
+    // Reads 1-10 pass (10 successful reads); reads 11-14 are blocked with the
+    // directive instead of returning content.
+    expect(readOutput.match(/Investigation budget reached/g)).toHaveLength(4)
+    expect(readOutput.match(/content2/g)).toHaveLength(5)
+  })
+
+  it("does not hard-block reads outside Build mode", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-gate-plan-"))
+    writeFileSync(join(root, "note.txt"), "content")
+    let readOutput = ""
+
+    streamText.mockImplementationOnce((config: any) => ({
+      fullStream: {
+        async *[Symbol.asyncIterator]() {
+          const outputs = await Promise.all([
+            config.tools.read.execute({ path: "note.txt" }),
+            config.tools.read.execute({ path: "note.txt" }),
+            config.tools.read.execute({ path: "note.txt" }),
+            config.tools.read.execute({ path: "note.txt" }),
+            config.tools.read.execute({ path: "note.txt" }),
+            config.tools.read.execute({ path: "note.txt" }),
+            config.tools.read.execute({ path: "note.txt" }),
+            config.tools.read.execute({ path: "note.txt" }),
+            config.tools.read.execute({ path: "note.txt" }),
+            config.tools.read.execute({ path: "note.txt" }),
+            config.tools.read.execute({ path: "note.txt" }),
+            config.tools.read.execute({ path: "note.txt" }),
+            config.tools.read.execute({ path: "note.txt" }),
+            config.tools.read.execute({ path: "note.txt" }),
+          ])
+          readOutput = outputs.join("\n")
+          yield { type: "text-delta", text: "done" }
+        },
+      },
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    }))
+
+    const result = await runAgent({
+      root,
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "plan",
+      messages: [{ role: "user", text: "plan reads" }],
+      permissions: { "*": "allow" },
+      requestApproval: async () => "once",
+      onEvent: () => {},
+      readBudget: 10,
+    })
+
+    expect(readOutput).not.toMatch(/Investigation budget reached/)
+    expect(readOutput).toContain("content")
+  })
+
+  it("retries a step-cap cut-off mid-work with a continuation prompt", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-steplimit-"))
+    streamText
+      .mockReturnValueOnce({
+        fullStream: {
+          async *[Symbol.asyncIterator]() {
+            yield { type: "reasoning-delta", text: "thinking" }
+            yield { type: "tool-call", toolName: "read", input: { path: "note.txt" }, toolCallId: "call-1" }
+          },
+        },
+        usage: Promise.resolve({ inputTokens: 5, outputTokens: 1, totalTokens: 6 }),
+        finalStep: Promise.resolve({ finishReason: "tool-calls", rawFinishReason: "tool-calls", callId: "call", response: { id: "response", headers: { "x-request-id": "request" } } }),
+        responseMessages: Promise.resolve([
+          { role: "assistant", content: [{ type: "text", text: "I was mid-work" }] },
+          { role: "tool", content: [{ type: "tool-result", toolCallId: "call-1", output: "file content" }] },
+        ]),
+      })
+      .mockReturnValueOnce({
+        fullStream: { async *[Symbol.asyncIterator]() { yield { type: "text-delta", text: "Finished the fix." } } },
+        usage: Promise.resolve({ inputTokens: 6, outputTokens: 2, totalTokens: 8 }),
+        finalStep: Promise.resolve({ finishReason: "stop", rawFinishReason: "stop", callId: "call", response: { id: "response", headers: { "x-request-id": "request" } } }),
+      })
+
+    const result = await runAgent({
+      root,
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "build",
+      messages: [{ role: "user", text: "fix the bug" }],
+      permissions: { "*": "allow" },
+      requestApproval: async () => "once",
+      onEvent: () => {},
+      maxAttempts: 2,
+    })
+
+    expect(streamText).toHaveBeenCalledTimes(2)
+    // The second call must include the continuation prompt.
+    const secondMessages = streamText.mock.calls[1]?.[0]?.messages ?? []
+    const continuation = secondMessages.find((m: any) => typeof m === "object" && m?.role === "user" && /ran out of tool steps/.test(m?.content ?? ""))
+    expect(continuation).toBeTruthy()
+    // The accumulated tool messages from attempt 1 must carry into attempt 2.
+    expect(secondMessages.some((m: any) => m?.role === "tool")).toBe(true)
+    expect(result).toMatchObject({ text: "Finished the fix.", attempts: 2, finishReason: "stop" })
+  })
+
+  it("does not retry a clean stop at the step cap", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-steplimit-clean-"))
+    streamText.mockReturnValueOnce({
+      fullStream: { async *[Symbol.asyncIterator]() { yield { type: "text-delta", text: "Done cleanly." } } },
+      usage: Promise.resolve({ inputTokens: 5, outputTokens: 1, totalTokens: 6 }),
+      finalStep: Promise.resolve({ finishReason: "stop", rawFinishReason: "stop", callId: "call", response: { id: "response", headers: { "x-request-id": "request" } } }),
+    })
+
+    const result = await runAgent({
+      root,
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "build",
+      messages: [{ role: "user", text: "do a thing" }],
+      permissions: { "*": "allow" },
+      requestApproval: async () => "once",
+      onEvent: () => {},
+      maxAttempts: 2,
+    })
+
+    expect(streamText).toHaveBeenCalledTimes(1)
+    expect(result).toMatchObject({ text: "Done cleanly.", attempts: 1 })
+  })
+
+  it("prunes old long tool results but keeps the tail, diffs, and errors", () => {
+    const tool = (callId: string, output: unknown, toolName = "read") => ({ role: "tool", content: [{ type: "tool-result", toolCallId: callId, toolName, output }] })
+    const messages = [
+      { role: "user", content: "start" },
+      tool("c1", "x".repeat(500)),
+      tool("c2", "y".repeat(500)),
+      tool("c3", "z".repeat(500)),
+      tool("c4", "--- a/x\n+++ b/x\n", "edit"),
+      tool("c5", "Error: boom"),
+      tool("c6", "tail-short"),
+      tool("c7", "tail-long".repeat(100)),
+    ]
+
+    const pruned = pruneOldToolResults(messages, 2, 200) as Array<{ content: Array<{ type: string; output?: string; toolName?: string }> }>
+    // Old read outputs are stubbed; the tool message itself is preserved.
+    expect(pruned[1]!.content[0]!.output).toContain("[Old read output cleared")
+    expect(pruned[2]!.content[0]!.output).toContain("[Old read output cleared")
+    expect(pruned[3]!.content[0]!.output).toContain("[Old read output cleared")
+    // The last 2 tool messages are the protected tail.
+    expect(pruned[6]!.content[0]!.output).toBe("tail-short")
+    expect(pruned[7]!.content[0]!.output).toBe("tail-long".repeat(100))
+    // Diffs and errors are never stubbed.
+    expect(pruned[4]!.content[0]!.output).toContain("--- a/x")
+    expect(pruned[5]!.content[0]!.output).toBe("Error: boom")
+  })
+
+  it("returns the same array when nothing is pruned", () => {
+    const messages = [
+      { role: "user", content: "start" },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "c1", toolName: "read", output: "short" }] },
+    ]
+    expect(pruneOldToolResults(messages, 6, 200)).toBe(messages)
   })
 })

@@ -78,3 +78,25 @@ export function exportLearning(state: LearningState) { return JSON.stringify(nor
 
 export function saveLearning(root: string, state: LearningState) { const folder = join(root, ".nimbl"); mkdirSync(folder, { recursive: true }); writeFileSync(fileFor(root), exportLearning(state), "utf8") }
 export function teachingPrompt(state: LearningState) { const normalized = normalizeLearning(state); const growing = Object.entries(normalized.concepts).filter(([, value]) => value.confidence < 0.6 && value.misconception?.status !== "corrected").map(([key]) => key).slice(0, 4); return growing.length ? `Teaching focus: briefly explain the relevant trade-off, especially around ${growing.join(", ")}. Do not quiz unless the user asks.` : "Teaching focus: explain important trade-offs concisely before suggesting an edit." }
+
+/**
+ * Leakage-aware teaching scorer (HeuristicEdu-style, heuristic only — no LLM call).
+ * Detects when a tutor response reveals the answer outright instead of guiding the
+ * student: answer-prefix markers, solved-formula drops, or a bare concluding value.
+ * Returns a score in [0, 1] where higher = more likely the answer was leaked.
+ */
+const LEAKAGE_PATTERNS: Array<{ re: RegExp; weight: number }> = [
+  { re: /\b(the answer is|the solution is|just (?:use|set)|simply (?:change|replace|set)|exactly|correct answer|it should be|the fix is)\b/i, weight: 0.5 },
+  { re: /\b(?:returns|equals|becomes|should be)\s+[`"'A-Za-z_$][\w$]*\s*$|=>\s*[`"'A-Za-z_$][\w$]*\s*$/m, weight: 0.4 },
+  { re: /\b(done|fixed|solved)\b[\s\S]{0,40}\b(pass|green|working)\b/i, weight: 0.3 },
+  { re: /^(?:#|##)?\s*(?:answer|solution|result)[:\s]/im, weight: 0.4 },
+  { re: /\b(?:const|let|var)\s+\w+\s*=\s*(?:true|false|\d+|['"`][^'"`]+['"`])/m, weight: 0.2 },
+]
+export function leakageScore(text: string): number {
+  if (!text || !text.trim()) return 0
+  const hits = LEAKAGE_PATTERNS.reduce((total, { re, weight }) => total + (re.test(text) ? weight : 0), 0)
+  return Math.min(1, hits)
+}
+export function leakageLabel(score: number): "none" | "low" | "medium" | "high" {
+  return score >= 0.6 ? "high" : score >= 0.35 ? "medium" : score >= 0.15 ? "low" : "none"
+}

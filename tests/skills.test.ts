@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
-import { availableSkillGuidance, canonicalSkillFile, discoverSkills, globalSkillsDir, listSkillFiles, loadSkill, parseSkillFrontmatter, syncRemoteSkills } from "@/core/skills"
+import { availableSkillGuidance, canonicalSkillFile, discoverSkills, globalSkillsDir, listSkillFiles, loadSkill, parseSkillFrontmatter, selectRelevantSkills, syncRemoteSkills } from "@/core/skills"
 
 describe("skills", () => {
   it("parses name, description, and body from frontmatter", () => {
@@ -123,5 +123,27 @@ describe("skills", () => {
     expect(summaries[0]!.name).toBe("remote-skill")
     expect(summaries[0]!.description).toBe("Remote skill")
     expect(existsSync(join(summaries[0]!.directory, "scripts", "run.sh"))).toBe(true)
+  })
+
+  it("selects skills relevant to the prompt and drops unrelated ones", () => {
+    const skills = [
+      { name: "code-review", description: "Review pull requests and diffs", location: "a", directory: "a", source: "project" as const },
+      { name: "deploy", description: "Ship to production via CI", location: "b", directory: "b", source: "global" as const },
+      { name: "testing", description: "Write and run unit tests", location: "c", directory: "c", source: "project" as const },
+      { name: "accessibility", description: "WCAG audit for web pages", location: "d", directory: "d", source: "project" as const },
+    ]
+    const relevant = selectRelevantSkills(skills, "review this code and write tests", 2)
+    expect(relevant.map((skill) => skill.name)).toContain("testing")
+    // The unrelated deploy/accessibility skills are pruned from the guidance.
+    expect(relevant.map((skill) => skill.name)).not.toContain("deploy")
+    expect(relevant.length).toBeLessThanOrEqual(2)
+  })
+
+  it("keeps a non-empty guidance when nothing matches", () => {
+    const skills = [
+      { name: "alpha", description: "Alpha skill", location: "a", directory: "a", source: "project" as const },
+      { name: "beta", description: "Beta skill", location: "b", directory: "b", source: "global" as const },
+    ]
+    expect(selectRelevantSkills(skills, "zzz no terms match", 6).length).toBe(2)
   })
 })

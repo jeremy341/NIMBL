@@ -4,6 +4,11 @@
 > Everything here follows from `docs/PLAN_OVERVIEW.md`; check off items as they land.
 >
 > **Status legend:** `[ ]` not started · `[~]` in progress · `[x]` done
+>
+> **Risk filter applied 2026-08-15:** every item is tagged SAFE (no token/solve risk) or
+> GATED (safe only with the stated guardrail) or DEFER (dropped / opt-in until measured).
+> The step cap is a *ceiling, not a quota* — solved easy tasks stop at 3 turns regardless of
+> budget; only *currently-failing* tasks (lh/mf/sh) get more expensive, which is the point.
 
 ---
 
@@ -13,121 +18,130 @@
 - [x] Research papers cataloged (`docs/TIER_B_RESEARCH_PAPERS.md`, `docs/BRAINSTORM.md`)
 - [x] Harness comparison written (`docs/HARNESS_COMPARISON.md`)
 - [x] Combined improvement doc written (`docs/IMPROVEMENT_BRAINSTORM_AND_HARNESSES.md`)
-- [ ] Master plan + this plan committed
+- [x] Master plan + this plan committed (`0511fb0`)
 
 ---
 
-## Phase 1 — Fix the 8-step bug (HIGHEST ROI, do this first)
+## Sprint A — Safe bug fixes (do now; all in `src/core/agent.ts` + tests)
 
-> Files: `src/core/agent.ts`, `src/core/agent-config.ts`, `src/core/agent-benchmark.ts`,
-> `tests/agent-run.test.ts`, `tests/agent-benchmark.test.ts`.
-> **Why first:** SWE-bench will be wasted on a known-broken cap if we run it before this.
+> These are the high-confidence fixes that can't regress the −40% claim or easy-task cost.
+> **Exit:** tier-b rerun shows `lh-fix-all` 0/12 → 6+/12 and `sh-hidden-green`/`mf-quote-margin`
+> improve, without raising per-solved tokens on easy tasks.
 
-- [ ] **1.1 Task-class turn allocator** — lexical/symbol classifier maps the prompt to a task
-  family `{retrieval, single-fix, multi-file, long-horizon}` and allocates `maxToolSteps`
-  (e.g. 8 / 12 / 40 / 100) + retrieval budget. Zero extra LLM calls. *(BRAINSTORM #1)*
-- [ ] **1.2 Step-cap retry with reflection** — treat `finishReason:"tool-calls"` at the cap as
-  retryable: append a one-line reflection ("you ran out of steps mid-fix; finish now") and retry.
-  *(BRAINSTORM #8; Reflexion)*
-- [ ] **1.3 Decouple attempts from steps** — transient 429/5xx/timeout retries must NOT consume
-  the step budget. *(Kimi `max_attempts_per_step`)*
-- [ ] **1.4 Enforce the read-to-edit gate** — after N read-only calls with no edit,
-  `read`/`glob`/`grep` return a directive instead of content (hard gate, not advisory).
-  *(ToolGate)*
-- [ ] **1.5 Verify-gated edits** — every `edit` must be followed by a `bash` verify within 2
-  steps or the loop is flagged. *(BRAINSTORM #3)*
-- [ ] **1.6 Scale the child `maxToolSteps: 8` cap** for delegated subagents + update the
-  `delegate` tool description to *encourage* use for separable bugs. *(BRAINSTORM #4)*
-
-**Exit criteria:** run the tier-b harness (`bun benchmarks/compare-run.ts`) and confirm
-`lh-fix-all` moves from 0/12 toward 8–12/12 and `sh-hidden-green`/`mf-quote-margin` improve,
-without regressing the −40% token efficiency.
-
----
-
-## Phase 2 — POSIX shell backend (prerequisite for real benchmarks)
-
-> Files: `src/core/shell.ts`, `src/core/agent.ts` (shell hint).
-
-- [ ] **2.1 Add `NIMBL_SHELL_BACKEND` env override** to `runShellCommand`:
-  - `"wsl"` → `["wsl.exe", "-e", "bash", "-lc", command]`
-  - `"docker"` → `["docker", "exec", "-i", "nimbl-bench", "bash", "-lc", command]`
-  - unset/`"auto"` → current `powershell` (win32) / `/bin/sh` (posix) behavior
-- [ ] **2.2 Update `shellDescription()`** in `agent.ts` so the bash-tool hint mentions WSL when
-  the backend is POSIX.
-- [ ] **2.3 Keep process-tree kill + bounded output logic** (shell-agnostic, no change).
-- [ ] **2.4 Add a test** for the backend-selection logic (`tests/`).
-
-**Exit criteria:** `NIMBL_SHELL_BACKEND=wsl bun benchmarks/opencode-only-run.ts`-style runs
-execute POSIX commands (e.g. `bun test` inside the fixture) through WSL successfully.
+- [x] **A.1 Audit loop research → failure analysis** (`docs/FAILURE_ANALYSIS_LH_MF_SH.md`).
+- [x] **A.2 Hard read-to-edit gate** — track `readsSinceEdit` in the `runAgent` closure
+  (increment on read/glob/grep execute, reset on edit/write/apply_patch). When ≥ `readBudget`
+  (default 12), the `read` tool **returns a directive instead of content** ("Investigation budget
+  reached: N read-only calls since the last edit. Make the focused edit now or answer directly.").
+  Replaces the advisory `prepareStep` injection (proven insufficient: failing runs did 52–83
+  reads / 0–3 edits). *(ToolGate; BRAINSTORM #3)* — **SAFE** (can't increase tokens; forces
+  act-over-audit).
+- [x] **A.3 Step-cap retry with reflection** — in the attempt loop (agent.ts:699), if a run
+  returns normally with `finishReason:"tool-calls"` at the cap **and** `attemptActivity`
+  (real work happened), append a one-line continuation ("You ran out of steps mid-fix. Finish
+  the fix now with minimal steps.") and retry once. Bounded by existing `maxAttempts`/
+  `MAX_ATTEMPTS=3`; only fires on currently-failing runs. *(Reflexion; opencode MAX_STEPS)* —
+  **GATED**: only on step-cap mid-work, never on clean stops.
+- [x] **A.4 Verify-gated edits (nudge)** — after an `edit`, reset the read-counter only on a
+  `bash` test run (or an explicit "done, no test needed" answer), not on the next read — in
+  `build` mode only. Encodes the solved pattern (solved `sh-hidden-green`: 18 edits + 14 bash;
+  failed: 3 edits + 5 bash). *(BRAINSTORM #3)* — **GATED**: nudge, not hard block; build-mode
+  only; "done, no test needed" is a valid verify.
+- [x] **A.5 Error-as-observation resilience** — feed tool errors back to the model as short
+  observations instead of throwing/aborting, so it self-recovers (Goose). Keep the doom-loop
+  guard. *(D3)* — **SAFE** (short error text replaces a failed attempt). *(already the existing
+  tool pattern; verified — no code change needed)*
 
 ---
 
-## Phase 3 — SWE-bench runner
+## Sprint B — Safe token defense (do now)
 
-> Files: `benchmarks/swebench-run.ts` (new), `src/core/agent-benchmark.ts` (export helpers),
-> `docs/REAL_BENCHMARK_PLAN.md` (new).
+> **Exit:** tier-b rerun shows per-solved tokens stay ~26–28k while solve rate holds/climbs.
 
-- [ ] **3.1 Corpus fetch script** — download a SWE-bench Lite subset (25–50 instances) to
-  `benchmarks/corpus/swebench/` as JSONL `{instance_id, repo, base_commit, problem_statement,
-  patch}` (HF `princeton-nlp/SWE-bench_Lite`). Stratify by difficulty if possible.
-- [ ] **3.2 Runner** `benchmarks/swebench-run.ts` mirroring `compare-run.ts`:
-  - per instance: `git clone --no-checkout` repo once → `git checkout base_commit` → per-sample
-    isolated workspace copy
-  - `runAgent({ mode:"build", messages:[problem_statement], live, permissions:"*":allow })`
-    with the WSL shell backend, shared rate limiter + concurrency
-  - capture `git diff` in the workspace → `model_patch`
-  - write `predictions.json` `[{instance_id, model_patch, model_name_or_path:"nimbl-hybrid"}]`
-  - emit per-run records via `appendBenchmarkRecords` + `benchmarkMetadata`
-- [ ] **3.3 Verify one instance** end-to-end locally (gold patch → predictions.json → local
-  `swebench eval` on a single instance if disk allows).
-
-**Exit criteria:** predictions.json for the subset is produced with per-run token/cost/latency
-records; one gold patch grades correctly through SWE-bench.
-
----
-
-## Phase 4 — Grading (cloud-first)
-
-- [ ] **4.1 Decide grading host**: Camber Cloud / GitHub Student Pack VM vs Modal
-  (`--modal true`) vs GitHub Actions runner. Prefer student-pack credits (already claimed?).
-- [ ] **4.2 Run `swebench eval Lite -p predictions.json --run-id nimbl-subset`** on the chosen
-  host.
-- [ ] **4.3 Commit raw predictions + results** (per claims rule: raw JSONL + git revision).
-- [ ] **4.4 Write `docs/REAL_BENCHMARK_PLAN.md`** — how to fetch/run/grade, cost estimates,
-  claims rule, Terminal-Bench follow-up.
-
-**Exit criteria:** a committed, reproducible SWE-bench subset score for NIMBL with opencode
-comparison on the same instances.
+- [x] **B.1 Conditional tool-result pruning (tail-protected)** — when a session nears the
+  context budget, stub **old, completed** tool outputs >200 chars with a marker, **never** `edit`
+  diffs / error outputs, **keep a recent tail** (protected window). No LLM call (Hermes phase 1).
+  *(B2)* — **GATED**: only near budget, only old outputs, tail-protected.
+- [x] **B.2 Cache-prefix boundary guard** — assert/ensure compaction **only touches the dynamic
+  tail** after the cache breakpoint; the stable system+instructions prefix is never mutated.
+  *(B4; TokenPilot)* — **SAFE** (a discipline guard, not prefix-folding). *(moved the session
+  summary out of the stable prefix into the dynamic tail in agent.ts)*
+- [x] **B.3 Extractive-first default** — `structural` compression is already the mode in
+  `MODE_OPTIONS`; make it the documented hard default and add a benchmark ablation for it.
+  *(Characterizing Prompt Compression)* — **SAFE** *(already the default; ablated in
+  `benchmarks/run.ts`)*.
+- [x] **B.4 BM25 skill selection** — filter `skills.ts` skill text by lexical relevance to the
+  current prompt (reuse `context.ts` terms) so only relevant skill content loads. *(MiMo; C4)* —
+  **SAFE** (pure reduction; skills already load on demand). *(new `selectRelevantSkills`)*
+- [x] **B.5 Leakage-aware learn mode** — add a "did the tutor reveal the answer" heuristic scorer
+  to the existing `question`/`learn` tools (no extra LLM call). *(HeuristicEdu; BRAINSTORM #6)* —
+  **SAFE** (heuristic on existing output; learn-mode only). *(new `leakageScore`/`leakageLabel`)*
 
 ---
 
-## Phase 5 — Terminal-Bench (later)
+## Sprint C — Per-class budgets ONLY (the 8-step fix, done safely)
 
-- [ ] **5.1 Install Harbor:** `uv tool install 'harbor[modal]'`.
-- [ ] **5.2 Add a NIMBL agent adapter** to Harbor (`harbor run -d terminal-bench/... --agent
-  nimbl`) using the POSIX shell backend.
-- [ ] **5.3 Run a subset + commit results.**
+> **Do NOT raise the global default.** The cap is what keeps easy tasks cheap; we keep small
+> budgets for easy/retrieval and reserve high budgets only for the long-horizon class.
+> This is the direct answer to "isn't 8 turns why NIMBL is cheap?" — yes, so we keep it for the
+> tasks where it's appropriate.
+
+- [ ] **C.1 Task-classifier** — new `src/core/task-classifier.ts`: lexical/symbol classifier maps
+  the prompt (+ optional task `tags`) to a family and a budget:
+  `{retrieval:8, single-fix:12, test-writing:16, multi-file:40, shell-loop:50, long-horizon:100}`.
+  Zero extra LLM calls. *(BRAINSTORM #1)*
+- [ ] **C.2 Wire classifier into agent** — `agent.ts:737` uses the classified `maxToolSteps`
+  instead of `Math.min(MAX_TOOL_STEPS=12, …)`; raise `MAX_TOOL_STEPS` to ~60 only as the
+  *absolute safety ceiling* for runaway, keeping per-class defaults small. Production default
+  (tasks.ts `maxSteps: 100`) now actually applies instead of being clamped to 12.
+- [ ] **C.3 Wire classifier into benchmark** — `agent-benchmark.ts:496,532` pass the per-task
+  budget (from `task.tags`) instead of flat 8.
+- [ ] **C.4 Decouple attempts from steps** — transient 429/5xx/timeout retries must NOT consume
+  the step budget (Kimi `max_attempts_per_step`). — **SAFE**.
+
+**Honest metric note:** raising solve-rate on lh/mf/sh will raise NIMBL's *per-solved average*
+from ~26k toward ~30–35k (adding solved hard tasks). opencode is 46.8k, so the claim stays
+negative (~−25%), but it **must be restated per category**, not as one headline.
 
 ---
 
-## After real benchmarks — Phases 2–4 of the improvement roadmap
+## Sprint D — SWE-bench + real benchmarks (after A–C)
 
-Once Phase 1 lands and the harness works on SWE-bench:
-- **Token defense:** read-cache, tool-output gating, hash-anchored edits, tool-result pruning,
-  cache-prefix-contiguous compaction, compact tool schemas.
-- **Efficiency:** extractive-default compression, sentence pruning, TrACE adaptive compute,
-  cache keepalive, per-role model routing.
-- **Intelligence:** plan-first escalation, exploration subagent, query rewriting, leakage-aware
-  learn mode, persistent project memory.
+> POSIX shell backend is the prerequisite. SWE-bench evaluation wants ~120GB free (we have 63GB)
+> → grade on student-pack cloud credits (Camber Cloud / Modal / GitHub Actions).
 
-See `docs/IMPROVEMENT_BRAINSTORM_AND_HARNESSES.md` §III.17 for the full phased breakdown.
+- [ ] **D.1 POSIX shell backend** — `NIMBL_SHELL_BACKEND=wsl|docker` override in `shell.ts`;
+  update the win32 bash hint; keep process-tree kill + bounded output. *(PLAN_OVERVIEW §4)*
+- [ ] **D.2 SWE-bench runner** — `benchmarks/swebench-run.ts`: fetch Lite subset (25–50,
+  stratified), checkout `base_commit`, `runAgent(problem_statement)` live, capture `git diff` →
+  `predictions.json`, emit `benchmarkMetadata` records.
+- [ ] **D.3 Grading (cloud-first)** — `swebench eval Lite -p predictions.json --run-id nimbl-subset`
+  on the chosen host; commit raw results + revision.
+- [ ] **D.4 `docs/REAL_BENCHMARK_PLAN.md`** — how to fetch/run/grade, cost estimates, claims rule.
+- [ ] **D.5 Terminal-Bench later** — `uv tool install 'harbor[modal]'`, NIMBL agent adapter.
+
+---
+
+## Deferred / opt-in / dropped (risk review 2026-08-15)
+
+| Item | Status | Why |
+|---|---|---|
+| **Hash-anchored edits** (oh-my-pi hashline, −61%) | **DROP for now** | Needs content-hash map + `edit` schema change; a free model emitting missing/stale hashes → rejected edits → retries → more tokens/steps on a tight budget. Worst failure mode for a cheap harness. Revisit after Sprint A measured. |
+| **ACI hard caps** (100-line viewer, filename-only grep) | **OPT-IN modes** | NIMBL already has retrieval that selects excerpts; hard caps can conflict and force extra reads. Take the safe 20% (empty-output sentinel, linter-gated edits), leave caps opt-in. |
+| **Plan-first escalation** (Plan-and-Act) | **OPT-IN** | Extra full LLM pass (~5–8k tokens) before every long-horizon task. Use cheapest model for planning if enabled. |
+| **Exploration subagent** (FastContext) | **HUGE-REPO ONLY** | Child costs full retrieval + tool setup + return summary (tokens *increase*). Only for genuinely large repos; cap child iterations + ≤1k summary. |
+| **Persistent project memory** | **GATED** | Only with MiMo-style budgeted injection + importance ranking + hard token cap, else it eats the context budget every session. |
+| **Inline security-risk self-labeling** | **DEFER** | Extra output field on every tool call + schema change → small-model schema errors → retries/steps. |
+| **Per-role model routing** | **GATED** | Keep main loop on the flagship model; only title/summary/compaction may use a cheap model (Hermes warns cheap summaries degrade compaction). |
+| **Iterative summaries for teaching** | **GATED** | Teaching-only, cheap-model-gated; compaction cost rises. |
+| **Query-aware sentence pruning** | **CONSERVATIVE** | Keep query-aware + conservative to avoid dropping a needed sentence → re-read. |
+| **Cache keepalive pings** | **SMALL** | Only if provider supports TTL pings; tiny ping token cost. |
 
 ---
 
 ## Standing rules
-- **Commit + push after each phase** (small fallback points; never lose a working state).
+- **Commit + push after each sprint** (small fallback points; never lose a working state).
 - **Benchmark before/after each change** on the tier-b corpus; keep the −40% token claim intact
   (quality must not regress — `docs/BENCHMARK_PLAN.md`).
 - **No secrets in commits** — keys via env only.
-- **Verify with `bun test` + `bun run typecheck`** after each phase.
+- **Verify with `bun test` + `bun run typecheck`** after each sprint.
