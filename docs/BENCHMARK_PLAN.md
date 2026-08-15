@@ -120,6 +120,16 @@ Then compare against opencode. Report table:
 
 **Claim format (P3-03):** "On `deepseek-v4-flash` over NIMBL's 6-task corpus, the `hybrid` configuration solved 6/6 tasks with **X% fewer input tokens** than opencode at equal quality." Only publish if `solved` counts match and raw JSONL + git revision are committed.
 
+> **Tier B update (2026-08-15):** the 150-file generated corpus (25 tasks × 3 samples, same
+> netic model) initially did **not** reproduce these savings (run-1 baseline: NIMBL hybrid solved
+> 68/75 at ~20% more tokens; opencode solved 75/75). After the root-cause fixes, the final
+> run-6/7 (tag `1786808124244` + `1786811591640`) **did** reproduce savings: NIMBL solved 67–69/75
+> (89–92%) vs opencode 75/75, at **40–44% fewer tokens per solved task** (26.2–28.0k vs 46.8k) and
+> ~38% lower latency. See [docs/TIER_B_FINAL_RESULTS.md](./TIER_B_FINAL_RESULTS.md) for the
+> per-task/category tables, the shell-mismatch / analysis-paralysis / delegation-overhead root
+> causes, and the actionable fixes (shell-hint in the bash tool description, verify-after-edit
+> nudge, delegate token budget).
+
 ### 3.4 Recommended target metrics to report per release
 1. **Solve rate** (tasks fully passed / total) — primary quality
 2. **Tokens per solved task** (input + output, excluding cache) — efficiency

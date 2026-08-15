@@ -123,7 +123,7 @@ NIMBL_BENCH_SAMPLES=5 bun benchmarks/run.ts  # sample variance
 - Full TUI with home screen (logo + input) and chat view (message list + prompt)
 - OpenCode-inspired session layout with left-border message cards
 - Slash autocomplete dropdown (Arrow Up/Down, Enter, Escape, mouse support)
-- Status bar showing provider, model, token count, and GPT-4o reference cost
+- Status bar showing provider, model, token count, and DeepSeek V4-Flash-0731 reference cost
 - Handle slash commands: `/quit`, `/clear`, `/help`, `/model`, `/provider`, `/stats`, `/status`, `/export`
 - Provider/model switching at runtime (reactive signals)
 - Conversation export to timestamped markdown file
@@ -163,17 +163,17 @@ NIMBL_BENCH_SAMPLES=5 bun benchmarks/run.ts  # sample variance
 - Handle provider-specific base URLs
 - Map provider name to OpenAI-compatible endpoint
 - Return structured `ChatResult` with token counts
-- Calculate hypothetical GPT-4o reference cost
+- Calculate DeepSeek V4-Flash-0731 reference cost
 
 **Design:**
 - No provider SDK imports — only openai-compatible via Vercel SDK
 - Error messages include provider name for debugging
-- `estimateReferenceCost()` applies a GPT-4o reference baseline; it is not actual savings
+- `estimateReferenceCost()` applies a DeepSeek V4-Flash-0731 reference baseline; it is not actual savings
 
 **Modifying this file:**
 - Always validate input (empty text, missing config)
 - Update `providerToBaseURL()` when adding providers
-- Keep `REF_COST` values accurate (currently GPT-4o pricing)
+- Keep `REF_COST` values accurate (currently DeepSeek V4-Flash-0731 pricing)
 
 ### `src/core/providers.ts` — Provider Config
 

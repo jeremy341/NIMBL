@@ -12,7 +12,7 @@ vi.mock("ai", () => ({
 vi.mock("@ai-sdk/openai", () => ({ createOpenAI: () => Object.assign(() => ({}), { chat: () => ({}), responses: () => ({}) }) }))
 vi.mock("@ai-sdk/anthropic", () => ({ createAnthropic: () => () => ({}) }))
 
-import { runAgent } from "@/core/agent"
+import { runAgent, countReadsSinceEdit } from "@/core/agent"
 
 describe("agent execution", () => {
   beforeEach(() => streamText.mockReset())
@@ -512,5 +512,52 @@ describe("agent execution", () => {
       onEvent: () => {},
       doomLoopThreshold: 2,
     })).rejects.toThrow("rejected continuing after repeated tool calls")
+  })
+
+  it("hard-rejects a doom loop when permission is deny", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-doomdeny-"))
+    const requestApproval = vi.fn(async () => "once" as const)
+
+    streamText.mockImplementationOnce((config: any) => ({
+      fullStream: {
+        async *[Symbol.asyncIterator]() {
+          for (let i = 0; i < 4; i++) {
+            yield { type: "tool-call", toolName: "read", input: { path: "note.txt" }, toolCallId: `call-${i}` }
+          }
+          yield { type: "text-delta", text: "done" }
+        },
+      },
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    }))
+
+    await expect(runAgent({
+      root,
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "build",
+      messages: [{ role: "user", text: "read note" }],
+      permissions: { "*": "allow", doom_loop: "deny" },
+      requestApproval,
+      onEvent: () => {},
+      doomLoopThreshold: 2,
+    })).rejects.toThrow("blocked by project policy")
+    // No approval prompt should be issued when policy is a hard deny.
+    expect(requestApproval).not.toHaveBeenCalled()
+  })
+
+  it("counts reads since the last edit for the read-to-edit budget", () => {
+    expect(countReadsSinceEdit([
+      ["read", "grep", "glob"],
+      ["read"],
+      ["edit"],
+      ["read", "read"],
+    ])).toBe(2)
+    expect(countReadsSinceEdit([
+      ["read", "write"],
+      ["grep", "grep"],
+    ])).toBe(2)
+    expect(countReadsSinceEdit([["edit"], ["edit"]])).toBe(0)
+    expect(countReadsSinceEdit([])).toBe(0)
   })
 })

@@ -2,7 +2,7 @@ import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { benchmarkRunSeed } from "./benchmark"
-import { gradeTask, loadAgentBenchmarkTasks, type AgentBenchmarkRun } from "./agent-benchmark"
+import { gradeTask, loadAgentBenchmarkTasks, type AgentBenchmarkRun, type AgentBenchmarkTask } from "./agent-benchmark"
 import { estimateReferenceCost } from "./api"
 
 interface OpenCodeEvent {
@@ -38,6 +38,8 @@ export async function runOpencodeBenchmark(options: {
   timeoutMs?: number
   extraArgs?: string[]
   onLine?: (line: string) => void
+  /** Max opencode processes in flight at once (each run is an isolated workspace). */
+  concurrency?: number
   /**
    * Custom OpenAI-compatible provider injected as `opencode.json` so the
    * benchmark can target an arbitrary endpoint (e.g. a free proxy). Keys:
@@ -52,11 +54,17 @@ export async function runOpencodeBenchmark(options: {
   const model = options.model || process.env.OPENCODE_BENCH_MODEL || process.env.NIMBL_MODEL || "deepseek/deepseek-chat"
   const samples = options.samples ?? 1
   const seed = options.seed ?? 20260728
+  const concurrency = options.concurrency ?? 1
   const runs: AgentBenchmarkRun[] = []
 
+  const work: Array<{ task: AgentBenchmarkTask; runSeed: number }> = []
   for (const task of tasks) {
-    for (let sample = 0; sample < samples; sample++) {
-      const runSeed = benchmarkRunSeed(seed + sample, task.id)
+    for (let sample = 0; sample < samples; sample++) work.push({ task, runSeed: benchmarkRunSeed(seed + sample, task.id) })
+  }
+
+  const lane = async (items: typeof work) => {
+    for (const item of items) {
+      const { task, runSeed } = item
       const started = Date.now()
       const workspace = join(tmpdir(), `opencode-bench-${task.id}-${runSeed}`)
       mkdirSync(workspace, { recursive: true })
@@ -231,5 +239,15 @@ export async function runOpencodeBenchmark(options: {
       })
     }
   }
+
+  const limit = Math.max(1, Math.min(concurrency, work.length))
+  let next = 0
+  const lanes = Array.from({ length: limit }, async () => {
+    while (next < work.length) {
+      const slice = work[next++]
+      await lane([slice])
+    }
+  })
+  await Promise.all(lanes)
   return runs
 }

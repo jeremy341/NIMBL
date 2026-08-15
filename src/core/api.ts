@@ -25,7 +25,8 @@ export async function sendChat(text: string, config: { provider: string; model: 
   }
 }
 
-const REF_COST = { input: 2.5e-6, output: 1e-5 }
+/** DeepSeek-V4-Flash-0731 reference baseline: $0.14/M input (cache miss), $0.28/M output. */
+const REF_COST = { input: 0.14e-6, output: 0.28e-6 }
 
 export function estimateReferenceCost(prompt: number, completion: number): number {
   return prompt * REF_COST.input + completion * REF_COST.output

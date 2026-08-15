@@ -7,20 +7,22 @@ import { benchmarkMetadata, benchmarkRunSeed, varianceSummary, type BenchmarkMet
 import { createProjectContextIndex, type ProjectContextIndex } from "./context"
 import { estimateReferenceCost } from "./api"
 import { catalogPrice, estimateProviderCost } from "./pricing"
-import { customProviderID, defaultModelFor, providerApiKey, resolveModel } from "./providers"
+import { customProviderID, defaultModelFor, providerApiKey, resolveModel, type ProviderModel } from "./providers"
 
 export type AgentBenchmarkMode = "none" | "lexical" | "hybrid" | "prompt-cache"
 
-const MODE_OPTIONS: Record<AgentBenchmarkMode, { hybrid?: boolean; graph?: boolean; compression: "none" | "structural" }> = {
+const MODE_OPTIONS: Record<AgentBenchmarkMode, { hybrid?: boolean; graph?: boolean; compression: "none" | "structural"; promptCache: boolean }> = {
   // No retrieval context at all — the baseline for "how many tokens does the
   // prompt itself cost". Exercises the full agent loop with an empty context.
-  none: { graph: false, compression: "none" },
+  none: { graph: false, compression: "none", promptCache: false },
   // Lexical retrieval + structural compression (the current default).
-  lexical: { graph: false, compression: "structural" },
+  lexical: { graph: false, compression: "structural", promptCache: false },
   // Graph + lexical + structural compression.
-  hybrid: { hybrid: true, graph: true, compression: "structural" },
+  hybrid: { hybrid: true, graph: true, compression: "structural", promptCache: false },
   // Hybrid retrieval + prompt caching enabled (cache read/write token split).
-  "prompt-cache": { hybrid: true, graph: true, compression: "structural" },
+  // Unlike `hybrid`, this opts into provider prompt caching, so the cache-aware
+  // cost column is a real measured ablation rather than a duplicate run.
+  "prompt-cache": { hybrid: true, graph: true, compression: "structural", promptCache: true },
 }
 
 export type AgentBenchmarkDifficulty = "easy" | "medium" | "hard"
@@ -114,8 +116,10 @@ export function loadAgentBenchmarkTasks(corpusRoot: string): AgentBenchmarkTask[
 
 export function gradeTask(root: string, task: AgentBenchmarkTask, answer: string): { passed: number; total: number; passedBefore: boolean; failedBefore: boolean } {
   let passed = 0
-  let passedBefore = false
-  let failedBefore = false
+  let f2pCount = 0
+  let f2pPassed = 0
+  let p2pCount = 0
+  let p2pPassed = 0
   for (const check of task.verify) {
     let ok = false
     if (check.type === "fileContains") {
@@ -130,18 +134,27 @@ export function gradeTask(root: string, task: AgentBenchmarkTask, answer: string
       ok = answer.includes(check.text || "")
     }
     if (check.kind === "failToPass") {
-      // F2P: verify the golden test actually starts failing on a pristine copy
-      // of this task's fixture (isolated by the caller), then passes on the run.
-      // The pristine evaluation is performed by `gradeTaskBaseline`.
-      failedBefore = true
-      passedBefore = false
+      // F2P: the golden must have been red on the pristine fixture (verified by
+      // `gradeTaskBaseline`), then green on the run. passedBefore reflects the
+      // before-contract per kind, not an arbitrary aggregate of all checks.
+      f2pCount++
+      if (ok) f2pPassed++
     } else if (check.kind === "passToPass") {
-      passedBefore = true
-      failedBefore = failedBefore || false
+      p2pCount++
+      if (ok) p2pPassed++
     }
     if (ok) passed++
   }
-  return { passed, total: task.verify.length, passedBefore, failedBefore }
+  return {
+    passed,
+    total: task.verify.length,
+    // All passToPass invariants held on the run (they also must hold on the
+    // pristine fixture, which `gradeTaskBaseline` re-checks independently).
+    passedBefore: p2pCount > 0 && p2pPassed === p2pCount,
+    // The task declares at least one golden that must have been red before;
+    // the authoritative before-state is gradeTaskBaseline.f2pInitiallyRed.
+    failedBefore: f2pCount > 0,
+  }
 }
 
 /**
@@ -282,8 +295,100 @@ export interface RunAgentBenchmarkOptions {
   apiKey?: string
   /** When set, run against the real provider; otherwise use the synthetic agent. */
   live?: boolean
+  /** Whole-run retries per (task, sample, mode) on transient provider failure (live only). */
+  runRetries?: number
+  /** Delay between whole-run retries in ms (live only). */
+  runRetryWaitMs?: number
+  /**
+   * Max (task, sample, mode) runs in flight at once. Default 1 (deterministic).
+   * Parallel runs share the per-mode context index (safe: no watcher, build
+   * completes before runs start) and a shared 429 gate so backoffs coordinate.
+   */
+  concurrency?: number
+  /**
+   * Global cap on model API requests per minute across all workers (live only).
+   * Each run issues roughly one request per tool step, so a naive concurrency of
+   * N can burst N×steps/min and trip provider rate limits (a shared proxy like
+   * netic caps at ~100 req/min across all clients). Defaults to 60 to stay
+   * conservatively under the cap; transient 429s are retried by the run loop.
+   */
+  requestsPerMinute?: number
   /** Optional synthetic-agent factory override for tests. */
   synthetic?: (task: AgentBenchmarkTask, mode: AgentBenchmarkMode) => any
+}
+interface BenchmarkWorkItem {
+  task: AgentBenchmarkTask
+  mode: AgentBenchmarkMode
+  runSeed: number
+  sample: number
+}
+
+interface BenchmarkShared {
+  fixtureRoot: string
+  provider: string
+  model: string
+  apiKey: string
+  live: boolean
+  runRetries: number
+  runRetryWaitMs: number
+  modelDefinition: ProviderModel
+  synthetic: (task: AgentBenchmarkTask, mode: AgentBenchmarkMode) => any
+  indexByMode: Map<AgentBenchmarkMode, ProjectContextIndex | undefined>
+  gradeTaskBaselineRef: Record<string, { failToPassCount: number; passToPassCount: number; f2pInitiallyRed: boolean }>
+  gate: { waitIfOpen(): Promise<void>; trip(): void }
+  limiter: { waitForToken(): Promise<void> }
+  priceMemo: Map<string, ReturnType<typeof catalogPrice> | undefined>
+}
+
+type FailedRun = { ok: false; message: string }
+type OkRun = { ok: true; text: string; usage: AgentRunResult["usage"]; attempts: number; latencyMs: number; finishReason?: string; budget: AgentRunResult["budget"]; retrieval: AgentRunResult["retrieval"] }
+
+/** Run items through a bounded worker pool, preserving completion order only per-item. */
+async function runWithConcurrency<T>(items: readonly T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
+  const limit = Math.max(1, Math.min(concurrency, items.length))
+  let next = 0
+  const lanes = Array.from({ length: limit }, async () => {
+    while (next < items.length) {
+      const item = items[next++]
+      await worker(item)
+    }
+  })
+  await Promise.all(lanes)
+}
+
+/** Shared circuit breaker: any worker that hits 429/5xx trips the gate, and all
+ * workers wait for the cooldown so parallel retries don't re-throttle each other. */
+function createRateGate(cooldownMs = 10_000): { waitIfOpen(): Promise<void>; trip(): void } {
+  let openUntil = 0
+  return {
+    async waitIfOpen() {
+      const remaining = openUntil - Date.now()
+      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining))
+    },
+    trip() {
+      openUntil = Math.max(openUntil, Date.now() + cooldownMs)
+    },
+  }
+}
+
+/**
+ * Token-bucket limiter shared by every live worker. Every model request (each
+ * tool step issues one) awaits a token, so aggregate request rate never bursts
+ * past `requestsPerMinute` regardless of concurrency. This is what keeps all the
+ * parallel lanes under the provider's per-minute cap.
+ */
+function createRequestLimiter(requestsPerMinute: number): { waitForToken(): Promise<void> } {
+  const intervalMs = 60_000 / Math.max(1, requestsPerMinute)
+  let lastIssuedAt = 0
+  return {
+    async waitForToken() {
+      const now = Date.now()
+      const target = Math.max(lastIssuedAt + intervalMs, now)
+      const delay = target - now
+      lastIssuedAt = target
+      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
+    },
+  }
 }
 
 export async function runAgentBenchmark(options: RunAgentBenchmarkOptions): Promise<AgentBenchmarkRun[]> {
@@ -294,6 +399,7 @@ export async function runAgentBenchmark(options: RunAgentBenchmarkOptions): Prom
   const modes: AgentBenchmarkMode[] = options.modes || ["hybrid"]
   const seed = options.seed ?? 20260728
   const samples = options.samples ?? 1
+  const concurrency = options.concurrency ?? 1
   const customProvider = customProviderID()
   const provider = options.provider || process.env.NIMBL_PROVIDER || customProvider || "freellmapi"
   const model = options.model || process.env.NIMBL_MODEL || (customProvider ? process.env.NIMBL_CUSTOM_MODEL || "" : "") || defaultModelFor(provider)
@@ -303,7 +409,9 @@ export async function runAgentBenchmark(options: RunAgentBenchmarkOptions): Prom
   const gradeTaskBaselineRef: Record<string, { failToPassCount: number; passToPassCount: number; f2pInitiallyRed: boolean }> = {}
   try {
     for (const mode of modes) {
-      if (mode === "none") continue
+      // `none` still gets a shared (graphless, cacheless) index so its runs do
+      // not fall back to `selectProjectContextWithBudget`'s per-workspace default
+      // index (which would leak one unclosed index per run).
       indexByMode.set(mode, createProjectContextIndex(fixtureRoot, MODE_OPTIONS[mode]))
     }
     for (const task of tasks) {
@@ -311,133 +419,199 @@ export async function runAgentBenchmark(options: RunAgentBenchmarkOptions): Prom
       mkdirSync(staleDirectory, { recursive: true })
       cpSync(fixtureRoot, staleDirectory, { recursive: true })
       gradeTaskBaselineRef[task.id] = gradeTaskBaseline(staleDirectory, task)
+    }
+    const modelDefinition = resolveModel(provider, model, Number(process.env.NIMBL_CONTEXT_WINDOW) || undefined)
+    const shared: BenchmarkShared = {
+      fixtureRoot,
+      provider,
+      model,
+      apiKey,
+      live: Boolean(options.live),
+      runRetries: options.runRetries ?? 3,
+      runRetryWaitMs: options.runRetryWaitMs ?? 15_000,
+      modelDefinition,
+      synthetic: options.synthetic || defaultSyntheticAgent,
+      indexByMode,
+      gradeTaskBaselineRef,
+      gate: createRateGate(),
+      limiter: createRequestLimiter(options.requestsPerMinute ?? 60),
+      priceMemo: new Map(),
+    }
+    const items: BenchmarkWorkItem[] = []
+    for (const task of tasks) {
       for (let sample = 0; sample < samples; sample++) {
         const runSeed = benchmarkRunSeed(seed + sample, task.id)
-        for (const mode of modes) {
-          const started = Date.now()
-          // Fresh copy per (task, sample, mode) so edits never leak.
-          const workspace = join(tmpdir(), `nimbl-bench-${task.id}-${runSeed}-${mode}`)
-          mkdirSync(workspace, { recursive: true })
-          cpSync(fixtureRoot, workspace, { recursive: true })
-          const events: AgentEvent[] = []
-          const subagentRuns: { id: string; prompt: string; agent?: string; inputTokens: number; outputTokens: number; totalTokens: number; cacheReadTokens: number; cacheWriteTokens: number; latencyMs: number }[] = []
-          const modelDefinition = resolveModel(provider, model, Number(process.env.NIMBL_CONTEXT_WINDOW) || undefined)
-          const synthetic = options.synthetic || defaultSyntheticAgent
-          const delegateTask: NonNullable<AgentRunOptions["delegateTask"]> = async (request) => {
-            const childStart = Date.now()
-            const childEvents: AgentEvent[] = []
-            try {
-              const child = await runAgent({
-                root: workspace,
-                provider,
-                model,
-                apiKey,
-                mode: request.agent || task.mode || "build",
-                messages: [{ role: "user", text: request.prompt }],
-                contextWindow: modelDefinition.contextWindow,
-                contextIndex: indexByMode.get(mode),
-                compression: MODE_OPTIONS[mode].compression,
-                permissions: { "*": "allow" },
-                requestApproval: async () => "once",
-                onEvent: (event) => childEvents.push(event),
-                streamTextOverride: options.live ? undefined : synthetic(task, mode),
-                maxToolSteps: 8,
-              })
-              // Child sessions cost their own tokens; fold them into the run so
-              // subagent overhead is not hidden (and show up in the raw log).
-              events.push({ kind: "subagent", prompt: request.prompt } as unknown as AgentEvent)
-              for (const event of childEvents) events.push({ ...event, kind: "subagent" as const, child: request.id } as unknown as AgentEvent)
-              subagentRuns.push({
-                id: request.id, prompt: request.prompt, agent: request.agent,
-                inputTokens: child.usage.inputTokens, outputTokens: child.usage.outputTokens,
-                totalTokens: child.usage.totalTokens, cacheReadTokens: child.usage.cacheReadTokens || 0,
-                cacheWriteTokens: child.usage.cacheWriteTokens || 0, latencyMs: child.latencyMs,
-              })
-              return child.text
-            } catch (error) {
-              return `Error: ${error instanceof Error ? error.message : String(error)}`
-            }
-          }
-          const agentOptions: AgentRunOptions = {
-            root: workspace,
-            provider,
-            model,
-            apiKey,
-            mode: task.mode || "build",
-            messages: [{ role: "user", text: task.prompt }],
-            contextWindow: modelDefinition.contextWindow,
-            contextIndex: indexByMode.get(mode),
-            compression: MODE_OPTIONS[mode].compression,
-            permissions: { "*": "allow" },
-            requestApproval: async () => "once",
-            onEvent: (event) => events.push(event),
-            delegateTask,
-            streamTextOverride: options.live ? undefined : synthetic(task, mode),
-            maxToolSteps: 8,
-          }
-          type FailedRun = { ok: false; message: string }
-          type OkRun = { ok: true; text: string; usage: AgentRunResult["usage"]; attempts: number; latencyMs: number; finishReason?: string; budget: AgentRunResult["budget"]; retrieval: AgentRunResult["retrieval"] }
-          const outcome: OkRun | FailedRun = await runAgent(agentOptions).then((result): OkRun => ({ ok: true, text: result.text, usage: result.usage, attempts: result.attempts, latencyMs: result.latencyMs, finishReason: result.finishReason, budget: result.budget, retrieval: result.retrieval })).catch((error): FailedRun => ({ ok: false, message: error instanceof Error ? error.message : String(error) }))
-          const failed = !outcome.ok
-          const answer = failed ? "" : outcome.text
-          const grade = gradeTask(workspace, task, answer)
-          const retrievalTokens = !failed ? Number(outcome.budget.retrieval || 0) : 0
-          // Only fetch live pricing in live mode; synthetic runs must not hit
-          // the network or mutate the shared catalog (which would pollute the
-          // static provider pricing used by other modules).
-          const price = !failed && options.live ? await catalogPrice(provider, model, modelDefinition).catch(() => undefined) : undefined
-          const providerCost = !failed && price ? estimateProviderCost(price, outcome.usage).usd : undefined
-          const subagentTokens = subagentRuns.reduce((sum, child) => sum + child.totalTokens, 0)
-          const subagentInput = subagentRuns.reduce((sum, child) => sum + child.inputTokens, 0)
-          const subagentOutput = subagentRuns.reduce((sum, child) => sum + child.outputTokens, 0)
-          const subagentCache = subagentRuns.reduce((sum, child) => sum + child.cacheReadTokens + child.cacheWriteTokens, 0)
-          const toolHistogram: Record<string, number> = {}
-          const toolEvents = events.filter((event) => event.kind === "tool")
-          for (const event of toolEvents) toolHistogram[event.tool] = (toolHistogram[event.tool] || 0) + 1
-          runs.push({
-            taskId: task.id,
-            mode,
-            seed: runSeed,
-            solved: !failed && grade.passed === grade.total,
-            passedChecks: grade.passed,
-            totalChecks: grade.total,
-            passedBefore: grade.passedBefore,
-            failedBefore: grade.failedBefore,
-            inputTokens: failed ? 0 : outcome.usage.inputTokens + subagentInput,
-            outputTokens: failed ? 0 : outcome.usage.outputTokens + subagentOutput,
-            totalTokens: failed ? 0 : outcome.usage.totalTokens + subagentTokens,
-            noCacheTokens: failed ? 0 : (outcome.usage.noCacheTokens || 0) + Math.max(0, subagentInput - subagentCache + subagentOutput),
-            cacheReadTokens: failed ? 0 : (outcome.usage.cacheReadTokens || 0) + subagentRuns.reduce((sum, child) => sum + child.cacheReadTokens, 0),
-            cacheWriteTokens: failed ? 0 : (outcome.usage.cacheWriteTokens || 0) + subagentRuns.reduce((sum, child) => sum + child.cacheWriteTokens, 0),
-            referenceCostUsd: failed ? 0 : estimateReferenceCost(outcome.usage.inputTokens + subagentInput, outcome.usage.outputTokens + subagentOutput),
-            providerCostUsd: providerCost,
-            latencyMs: Date.now() - started,
-            attempts: failed ? 0 : outcome.attempts,
-            toolSteps: toolEvents.length,
-            finishReason: failed ? undefined : outcome.finishReason,
-            retrievalTokens,
-            retrievalCandidates: !failed && Array.isArray(outcome.retrieval?.candidates) ? outcome.retrieval.candidates.length : 0,
-            answer,
-            difficulty: task.difficulty,
-            tags: task.tags,
-            telemetry: {
-              failed,
-              error: failed ? outcome.message : undefined,
-              subagentRuns,
-              subagentTokens,
-              toolHistogram,
-              eventCount: events.length,
-              rawEvents: events,
-              baseline: gradeTaskBaselineRef[task.id] ?? undefined,
-            },
-          })
-        }
+        for (const mode of modes) items.push({ task, mode, runSeed, sample })
       }
     }
+    await runWithConcurrency(items, concurrency, async (item) => {
+      const run = await runBenchmarkItem(shared, item)
+      runs.push(run)
+    })
   } finally {
     for (const index of indexByMode.values()) index?.close()
   }
   return runs
+}
+
+/** Execute one (task, sample, mode) run in an isolated workspace and return its record. */
+async function runBenchmarkItem(shared: BenchmarkShared, item: BenchmarkWorkItem): Promise<AgentBenchmarkRun> {
+  const { task, mode, runSeed, sample } = item
+  const { fixtureRoot, provider, model, apiKey, modelDefinition, indexByMode, gradeTaskBaselineRef } = shared
+  const live = shared.live
+  const started = Date.now()
+  const maxRunAttempts = live ? shared.runRetries + 1 : 1
+  const retryWaitMs = shared.runRetryWaitMs
+  let workspace = ""
+  let events: AgentEvent[] = []
+  let subagentRuns: { id: string; prompt: string; agent?: string; inputTokens: number; outputTokens: number; totalTokens: number; cacheReadTokens: number; cacheWriteTokens: number; latencyMs: number }[] = []
+  let outcome: OkRun | FailedRun | undefined
+  for (let runAttempt = 1; runAttempt <= maxRunAttempts; runAttempt++) {
+    // Fresh copy per (task, sample, mode, attempt) so edits never leak.
+    workspace = join(tmpdir(), `nimbl-bench-${task.id}-${runSeed}-${mode}${runAttempt > 1 ? `-r${runAttempt}` : ""}`)
+    mkdirSync(workspace, { recursive: true })
+    cpSync(fixtureRoot, workspace, { recursive: true })
+    events = []
+    subagentRuns = []
+    const delegateTask: NonNullable<AgentRunOptions["delegateTask"]> = async (request) => {
+      const childStart = Date.now()
+      const childEvents: AgentEvent[] = []
+      try {
+        const child = await runAgent({
+          root: workspace,
+          provider,
+          model,
+          apiKey,
+          mode: request.agent || task.mode || "build",
+          messages: [{ role: "user", text: request.prompt }],
+          contextWindow: modelDefinition.contextWindow,
+          contextIndex: indexByMode.get(mode),
+          compression: MODE_OPTIONS[mode].compression,
+          promptCache: MODE_OPTIONS[mode].promptCache,
+          permissions: { "*": "allow", doom_loop: "deny" },
+          requestApproval: async () => "once",
+          onEvent: (event) => childEvents.push(event),
+          streamTextOverride: live ? undefined : shared.synthetic(task, mode),
+          beforeRequest: live ? () => shared.limiter.waitForToken() : undefined,
+          maxToolSteps: 8,
+          maxAttempts: live ? 5 : undefined,
+          retryDelayMs: live ? 2_000 : undefined,
+        })
+        // Child sessions cost their own tokens; fold them into the run so
+        // subagent overhead is not hidden (and show up in the raw log).
+        events.push({ kind: "subagent", prompt: request.prompt } as unknown as AgentEvent)
+        for (const event of childEvents) events.push({ ...event, kind: "subagent" as const, child: request.id } as unknown as AgentEvent)
+        subagentRuns.push({
+          id: request.id, prompt: request.prompt, agent: request.agent,
+          inputTokens: child.usage.inputTokens, outputTokens: child.usage.outputTokens,
+          totalTokens: child.usage.totalTokens, cacheReadTokens: child.usage.cacheReadTokens || 0,
+          cacheWriteTokens: child.usage.cacheWriteTokens || 0, latencyMs: child.latencyMs,
+        })
+        return child.text
+      } catch (error) {
+        return `Error: ${error instanceof Error ? error.message : String(error)}`
+      }
+    }
+    const agentOptions: AgentRunOptions = {
+      root: workspace,
+      provider,
+      model,
+      apiKey,
+      mode: task.mode || "build",
+      messages: [{ role: "user", text: task.prompt }],
+      contextWindow: modelDefinition.contextWindow,
+      contextIndex: indexByMode.get(mode),
+      compression: MODE_OPTIONS[mode].compression,
+      promptCache: MODE_OPTIONS[mode].promptCache,
+      permissions: { "*": "allow", doom_loop: "deny" },
+      requestApproval: async () => "once",
+      onEvent: (event) => events.push(event),
+      delegateTask,
+      streamTextOverride: live ? undefined : shared.synthetic(task, mode),
+      beforeRequest: live ? () => shared.limiter.waitForToken() : undefined,
+      maxToolSteps: 8,
+      maxAttempts: live ? 5 : undefined,
+      retryDelayMs: live ? 2_000 : undefined,
+    }
+    // Wait for any in-flight cooldown opened by another parallel worker before
+    // issuing a request, so backoffs are shared rather than additive.
+    await shared.gate.waitIfOpen()
+    outcome = await runAgent(agentOptions).then((result): OkRun => ({ ok: true, text: result.text, usage: result.usage, attempts: result.attempts, latencyMs: result.latencyMs, finishReason: result.finishReason, budget: result.budget, retrieval: result.retrieval })).catch((error): FailedRun => ({ ok: false, message: error instanceof Error ? error.message : String(error) }))
+    if (outcome.ok || runAttempt === maxRunAttempts) break
+    // Transient provider outage (5xx/429/network). Trip the shared gate so other
+    // parallel workers back off too, wait, then retry the whole run on a fresh
+    // workspace so the sample isn't zeroed out.
+    if (/5\d\d|429|401|rate limit|too many requests|ECONN|ETIMEDOUT|EAI_AGAIN|fetch failed/i.test(outcome.message)) {
+      console.error(`[retry] ${task.id}/${mode} sample ${sample} attempt ${runAttempt} failed (${outcome.message.slice(0, 80)}); waiting ${retryWaitMs}ms`)
+      shared.gate.trip()
+      await new Promise((resolve) => setTimeout(resolve, retryWaitMs))
+      continue
+    }
+    break
+  }
+  if (outcome === undefined) outcome = { ok: false, message: "run loop did not execute" }
+  const finalOutcome: OkRun | FailedRun = outcome
+  const failed = !finalOutcome.ok
+  const answer = failed ? "" : finalOutcome.text
+  const grade = gradeTask(workspace, task, answer)
+  const retrievalTokens = !failed ? Number(finalOutcome.budget.retrieval || 0) : 0
+  // Only fetch live pricing in live mode; synthetic runs must not hit
+  // the network or mutate the shared catalog (which would pollute the
+  // static provider pricing used by other modules). Memoize per (provider, model)
+  // so parallel runs share a single catalog fetch.
+  const price = !failed && live ? await (() => {
+    const key = `${provider}|${model}`
+    const memo = shared.priceMemo.get(key)
+    if (memo) return memo
+    const promise = catalogPrice(provider, model, modelDefinition).catch(() => undefined)
+    shared.priceMemo.set(key, promise)
+    return promise
+  })() : undefined
+  const providerCost = !failed && price ? estimateProviderCost(price, finalOutcome.usage).usd : undefined
+  const subagentTokens = subagentRuns.reduce((sum, child) => sum + child.totalTokens, 0)
+  const subagentInput = subagentRuns.reduce((sum, child) => sum + child.inputTokens, 0)
+  const subagentOutput = subagentRuns.reduce((sum, child) => sum + child.outputTokens, 0)
+  const subagentCache = subagentRuns.reduce((sum, child) => sum + child.cacheReadTokens + child.cacheWriteTokens, 0)
+  const toolHistogram: Record<string, number> = {}
+  const toolEvents = events.filter((event) => event.kind === "tool")
+  for (const event of toolEvents) toolHistogram[event.tool] = (toolHistogram[event.tool] || 0) + 1
+  return {
+    taskId: task.id,
+    mode,
+    seed: runSeed,
+    solved: !failed && grade.passed === grade.total,
+    passedChecks: grade.passed,
+    totalChecks: grade.total,
+    passedBefore: grade.passedBefore,
+    failedBefore: grade.failedBefore,
+    inputTokens: failed ? 0 : finalOutcome.usage.inputTokens + subagentInput,
+    outputTokens: failed ? 0 : finalOutcome.usage.outputTokens + subagentOutput,
+    totalTokens: failed ? 0 : finalOutcome.usage.totalTokens + subagentTokens,
+    noCacheTokens: failed ? 0 : (finalOutcome.usage.noCacheTokens || 0) + Math.max(0, subagentInput - subagentCache + subagentOutput),
+    cacheReadTokens: failed ? 0 : (finalOutcome.usage.cacheReadTokens || 0) + subagentRuns.reduce((sum, child) => sum + child.cacheReadTokens, 0),
+    cacheWriteTokens: failed ? 0 : (finalOutcome.usage.cacheWriteTokens || 0) + subagentRuns.reduce((sum, child) => sum + child.cacheWriteTokens, 0),
+    referenceCostUsd: failed ? 0 : estimateReferenceCost(finalOutcome.usage.inputTokens + subagentInput, finalOutcome.usage.outputTokens + subagentOutput),
+    providerCostUsd: providerCost,
+    latencyMs: Date.now() - started,
+    attempts: failed ? 0 : finalOutcome.attempts,
+    toolSteps: toolEvents.length,
+    finishReason: failed ? undefined : finalOutcome.finishReason,
+    retrievalTokens,
+    retrievalCandidates: !failed && Array.isArray(finalOutcome.retrieval?.candidates) ? finalOutcome.retrieval.candidates.length : 0,
+    answer,
+    difficulty: task.difficulty,
+    tags: task.tags,
+    telemetry: {
+      failed,
+      error: failed ? finalOutcome.message : undefined,
+      subagentRuns,
+      subagentTokens,
+      toolHistogram,
+      eventCount: events.length,
+      rawEvents: events,
+      baseline: gradeTaskBaselineRef[task.id] ?? undefined,
+    },
+  }
 }
 
 export function summarizeAgentBenchmarkRuns(runs: AgentBenchmarkRun[]): Record<string, AgentBenchmarkSummary> {

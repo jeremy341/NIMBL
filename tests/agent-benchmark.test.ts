@@ -53,4 +53,29 @@ describe("agent benchmark", () => {
     expect(byMode.none.totalTokens.mean).toBeGreaterThan(0)
     expect(byMode.lexical.totalTokens.mean).toBeGreaterThan(0)
   })
+
+  it("produces identical graded results with concurrency 1 and 4", async () => {
+    const { runAgentBenchmark } = await import("@/core/agent-benchmark")
+    const sequential = await runAgentBenchmark({ corpusRoot, modes: ["none", "lexical"], samples: 1, concurrency: 1 })
+    const parallel = await runAgentBenchmark({ corpusRoot, modes: ["none", "lexical"], samples: 1, concurrency: 4 })
+    expect(sequential.length).toBe(parallel.length)
+    const key = (run: { taskId: string; mode: string; seed: number }) => `${run.mode}:${run.taskId}:${run.seed}`
+    const sequentialByKey = new Map(sequential.map((run) => [key(run), run]))
+    for (const run of parallel) {
+      const seq = sequentialByKey.get(key(run))
+      expect(seq, `missing sequential run for ${key(run)}`).toBeDefined()
+      expect(seq!.solved).toBe(run.solved)
+      expect(seq!.passedChecks).toBe(run.passedChecks)
+      expect(seq!.totalChecks).toBe(run.totalChecks)
+      expect(seq!.totalTokens).toBe(run.totalTokens)
+    }
+  })
+
+  it("runs all four modes including prompt-cache against the frozen corpus", async () => {
+    const { runAgentBenchmark } = await import("@/core/agent-benchmark")
+    const runs = await runAgentBenchmark({ corpusRoot, modes: ["none", "lexical", "hybrid", "prompt-cache"], samples: 1, concurrency: 4 })
+    const modes = new Set(runs.map((run) => run.mode))
+    expect([...modes].sort()).toEqual(["hybrid", "lexical", "none", "prompt-cache"])
+    expect(runs.length).toBeGreaterThanOrEqual(24)
+  })
 })

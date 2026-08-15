@@ -50,4 +50,24 @@ describe("prompt caching", () => {
     expect(parts).toHaveLength(1)
     expect(cached.cachedPrefix).toBe(parts[0]?.content)
   })
+
+  it("disables all cache hints when enabled: false (prompt-cache ablation)", () => {
+    const openrouter = buildCachedPrompt({ provider: getProvider("openrouter"), stable, dynamic, enabled: false })
+    expect(typeof openrouter.system).toBe("string")
+    expect(openrouter.providerOptions).toEqual({})
+    expect(openrouter.cacheKey).toBe("")
+    expect(openrouter.cachedPrefix).toBe("")
+
+    const anthropic = buildCachedPrompt({ provider: getProvider("anthropic"), stable, dynamic, enabled: false })
+    expect(typeof anthropic.system).toBe("string")
+    expect(anthropic.system).toBe([...stable, ...dynamic].join("\n\n"))
+    expect(anthropic.providerOptions).toEqual({})
+    expect(anthropic.cacheKey).toBe("")
+  })
+
+  it("enabled defaults to true so existing callers keep cache hints", () => {
+    const cached = buildCachedPrompt({ provider: getProvider("openrouter"), stable, dynamic })
+    expect(cached.providerOptions).toMatchObject({ openai: { promptCacheKey: cached.cacheKey } })
+    expect(cached.cacheKey).not.toBe("")
+  })
 })

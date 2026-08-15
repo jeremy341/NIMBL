@@ -4,12 +4,12 @@ import { estimateReferenceCost } from "@/core/api"
 describe("estimateReferenceCost", () => {
   it("calculates correct cost for prompt tokens", () => {
     const result = estimateReferenceCost(1_000_000, 0)
-    expect(result).toBeCloseTo(2.5, 2)
+    expect(result).toBeCloseTo(0.14, 2)
   })
 
   it("calculates correct cost for completion tokens", () => {
     const result = estimateReferenceCost(0, 1_000_000)
-    expect(result).toBeCloseTo(10.0, 2)
+    expect(result).toBeCloseTo(0.28, 2)
   })
 
   it("returns zero for zero tokens", () => {

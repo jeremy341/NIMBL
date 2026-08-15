@@ -11,6 +11,7 @@ const seed = process.env.NIMBL_BENCH_SEED ? Number(process.env.NIMBL_BENCH_SEED)
 const samples = process.env.NIMBL_BENCH_SAMPLES ? Number(process.env.NIMBL_BENCH_SAMPLES) : 1
 const live = process.env.NIMBL_BENCH_LIVE === "1" || Boolean(process.env.NIMBL_CUSTOM_BASE_URL || process.env.OPENCODE_BENCH_BASE_URL)
 const nimblModes = (process.env.NIMBL_BENCH_MODES || "hybrid").split(",") as AgentBenchmarkRun["mode"][]
+const concurrency = process.env.NIMBL_BENCH_CONCURRENCY ? Number(process.env.NIMBL_BENCH_CONCURRENCY) : 4
 const taskIds = (process.env.NIMBL_BENCH_TASKS || "").split(",").map((id) => id.trim()).filter(Boolean)
 
 // Optional custom OpenAI-compatible endpoint (e.g. a free proxy): set
@@ -47,7 +48,8 @@ mkdirSync(rawOpenCodeRoot, { recursive: true })
 console.log(`corpusRoot: ${corpusRoot}`)
 
 console.log("== Running NIMBL agent benchmark ==")
-const nimblRuns = await runAgentBenchmark({ corpusRoot, seed, samples, live, modes: nimblModes, taskIds: taskIds.length ? taskIds : undefined })
+console.log(`concurrency: ${concurrency} (set NIMBL_BENCH_CONCURRENCY to override)`)
+const nimblRuns = await runAgentBenchmark({ corpusRoot, seed, samples, live, modes: nimblModes, taskIds: taskIds.length ? taskIds : undefined, concurrency, requestsPerMinute: process.env.NIMBL_BENCH_REQ_PER_MIN ? Number(process.env.NIMBL_BENCH_REQ_PER_MIN) : undefined })
 const nimblRecordsFile = join(resultsDir, `agent-benchmark-${seed}-s${samples}${live ? "-live" : ""}-${runTag}.jsonl`)
 appendBenchmarkRecords(nimblRecordsFile, nimblRuns as AgentBenchmarkRun[])
 // Write every NIMBL run as its own raw file (full event stream included).
@@ -60,7 +62,7 @@ for (const run of nimblRuns) {
 console.log("== Running opencode benchmark ==")
 console.log(`opencode model: ${opencodeModel} (set OPENCODE_BENCH_MODEL to override)`)
 const opencodeRuns = await runOpencodeBenchmark({
-  corpusRoot, seed, samples, model: opencodeModel, taskIds: taskIds.length ? taskIds : undefined, customProvider,
+  corpusRoot, seed, samples, model: opencodeModel, taskIds: taskIds.length ? taskIds : undefined, customProvider, concurrency,
 })
 appendBenchmarkRecords(join(resultsDir, `opencode-benchmark-${seed}-s${samples}-${runTag}.jsonl`), opencodeRuns)
 
@@ -94,9 +96,12 @@ console.log(`Raw results written to:\n  ${rawNimblRoot}\n  ${rawOpenCodeRoot}\n 
 console.log(JSON.stringify({ meta, nimblByMode, opencode: { solved: opencodeSolved, total: opencodeTotal, totalTokens: ocTokens, referenceCostUsd: ocCost } }, null, 2))
 console.log("\n=== Head-to-head (per task) ===")
 const ocByTask = new Map(opencodeRuns.map((run) => [run.taskId, run]))
-for (const run of nimblRuns) {
-  if (run.mode !== "hybrid") continue
-  const oc = ocByTask.get(run.taskId)
-  if (!oc) continue
-  console.log(`  ${run.taskId}: NIMBL(hybrid) solved=${run.solved} tokens=${run.totalTokens} | opencode solved=${oc.solved} tokens=${oc.totalTokens}`)
+for (const mode of nimblModes) {
+  console.log(`  -- mode: ${mode} --`)
+  for (const run of nimblRuns) {
+    if (run.mode !== mode) continue
+    const oc = ocByTask.get(run.taskId)
+    if (!oc) continue
+    console.log(`  ${run.taskId}: NIMBL(${mode}) solved=${run.solved} tokens=${run.totalTokens} cacheRead=${run.cacheReadTokens} | opencode solved=${oc.solved} tokens=${oc.totalTokens}`)
+  }
 }

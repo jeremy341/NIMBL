@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 .env.*
+!.env.example
 *.log
 .DS_Store
 Thumbs.db
@@ -12,6 +13,7 @@ benchmarks/corpus/tier-b/
 nimbl-export-*.md
 nimbl-share-*.md
 renderer-check.txt
+unit-out.txt
 # Stale compiled outputs
 src/core/*.js
 src/core/*.d.ts
