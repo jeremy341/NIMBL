@@ -27,10 +27,10 @@ opencode streams **per-tool parts** into the assistant message. Each tool call b
 | webfetch | `%` | `~ Fetching from the web...` | `WebFetch <url>` |
 | websearch | `◈` | `~ Searching web...` | `<Provider> "<query>"` + `(N results)` |
 | task | `│`/`✓` | `~ Delegating...` | `Agent Task — <desc>` + `↳ <Tool> <title>` + `↳ N toolcallscalls` + `↳ 3 toolcalls · 1m 2s` |
-| todowrite | `⚙` | `~ Updating todos...` | `# Todos` block |
+| todowrite | `` | `~ Updating todos...` | `# Todos` block |
 | question | `→` | `~ Asking...` | `# Questions` block |
 | skill | `→` | `~ Loading skill...` | `Skill <name>` |
-| generic | `⚙` | `~ Running tool...` | `# <tool> <title>` block |
+| generic | `` | `~ Running tool...` | `# <tool> <title>` block |
 
 **The "grey text" mechanics (`InlineToolRow`, lines 1907–1985):**
 - While running: `<Spinner color={props.color}>{props.children}</Spinner>` — a braille spinner followed by the children, all in `theme.textMuted` (grey `#808080`).
@@ -57,10 +57,10 @@ NIMBL has the same architecture: `ToolPartView` in `session.tsx` renders each to
 | webfetch | `%` | `~ Fetching from the web...` | `WebFetch <url>` |
 | websearch | `◈` | `~ Searching web...` | `(N results)` |
 | delegate | `│` | `# Subagent Task — <desc>` (block, spinner) | `# Subagent Task — <desc>` + `· <duration>` + output |
-| todowrite | `⚙` | `~ Updating todos...` | `# Todos` block |
+| todowrite | `` | `~ Updating todos...` | `# Todos` block |
 | question | `→` | `~ Asking questions...` | `# Questions` block |
 | skill | `→` | `~ Loading skill...` | `Skill <name>` |
-| generic | `⚙` | `~ Running tool...` | `# <tool> <title>` block |
+| generic | `` | `~ Running tool...` | `# <tool> <title>` block |
 
 **Mechanics (`InlineTool`, lines 180–228):**
 - While running: `<Spinner color={color()}>~ {props.pending}</Spinner>` where `color()` = `theme.text` while running (white, not grey — see below).
@@ -155,20 +155,20 @@ So in opencode you: click a task card → land in the child → use `up`/`left`/
 
 | Capability | opencode | NIMBL | Gap |
 |---|---|---|---|
-| Click a task card → child session | Yes (direct navigate) | No — opens Subagents dialog, then select | 🟡 one extra step |
-| `view subagents` hint under assistant msg | Yes (with shortcut + background hint) | Yes — "view subagents" hint when message has delegate parts (session.tsx) | ✅ |
-| Live child tool activity in parent card (`↳ Read src/main.ts`) | **Yes (streamed via child session subscription)** | **No** | ❌ |
-| Live toolcall counter (`↳ N toolcalls`) | Yes | No | ❌ |
-| Retry line in card (`↳ Retrying (attempt N) · msg`) | Yes | No (only parent retry banner) | ❌ |
-| Completion summary with toolcalls (`3 toolcalls · 1m 2s`) | Yes | Duration only (`· 1m 2s`) | 🟡 |
-| Subagent footer (Parent/Prev/Next + index + usage) | Yes | Yes | ✅ |
-| Footer buttons show their keybinding | Yes (shortcut text) | No (label only) | ❌ |
-| Arrow-key cycling (up/left/right) | **Yes** (`session.parent`, `session.child.next/previous`) | **No keyboard shortcut** | ❌ |
-| `session.child.first` (leader+down) | Yes | No | ❌ |
-| Background subagents (`ctrl+b`) | Yes (experimental) | No | ❌ |
-| Subagent depth limit | config `subagent_depth` (default 1) | hardcoded 3 | 🟡 |
-| Cancel running child | via session abort | via `ctrl+c` in Subagents dialog | ✅ |
-| Subagent Actions context menu | Yes (Open) | No | ❌ |
+| Click a task card → child session | Yes (direct navigate) | No — opens Subagents dialog, then select |  one extra step |
+| `view subagents` hint under assistant msg | Yes (with shortcut + background hint) | Yes — "view subagents" hint when message has delegate parts (session.tsx) |  |
+| Live child tool activity in parent card (`↳ Read src/main.ts`) | **Yes (streamed via child session subscription)** | **No** |  |
+| Live toolcall counter (`↳ N toolcalls`) | Yes | No |  |
+| Retry line in card (`↳ Retrying (attempt N) · msg`) | Yes | No (only parent retry banner) |  |
+| Completion summary with toolcalls (`3 toolcalls · 1m 2s`) | Yes | Duration only (`· 1m 2s`) |  |
+| Subagent footer (Parent/Prev/Next + index + usage) | Yes | Yes |  |
+| Footer buttons show their keybinding | Yes (shortcut text) | No (label only) |  |
+| Arrow-key cycling (up/left/right) | **Yes** (`session.parent`, `session.child.next/previous`) | **No keyboard shortcut** |  |
+| `session.child.first` (leader+down) | Yes | No |  |
+| Background subagents (`ctrl+b`) | Yes (experimental) | No |  |
+| Subagent depth limit | config `subagent_depth` (default 1) | hardcoded 3 |  |
+| Cancel running child | via session abort | via `ctrl+c` in Subagents dialog |  |
+| Subagent Actions context menu | Yes (Open) | No |  |
 
 ---
 
@@ -204,17 +204,17 @@ From `src/core/settings.ts` defaults — **there are NO subagent-navigation keys
 
 > **Status: all 6 implemented 2026-08-14.** Verification: `bun run typecheck` clean · 233 tests pass · build clean · renderer smoke exit 0.
 
-1. **Stream child tool activity into the parent delegate card.** ✅ **Implemented.** The child session id now equals the delegate tool part's event id (`part.id === child.id`), and a `childActivity` memo in the TUI derives live child state (running/completed tools, toolcall count, retry, duration). `ToolPartView` renders `↳ <Tool> <title>`, `↳ N toolcalls`, and the retry line from it — mirroring opencode's `Task` component.
+1. **Stream child tool activity into the parent delegate card.**  **Implemented.** The child session id now equals the delegate tool part's event id (`part.id === child.id`), and a `childActivity` memo in the TUI derives live child state (running/completed tools, toolcall count, retry, duration). `ToolPartView` renders `↳ <Tool> <title>`, `↳ N toolcalls`, and the retry line from it — mirroring opencode's `Task` component.
 
-2. **Add `N toolcalls · duration` to the completed delegate card.** ✅ **Implemented.** The delegate card shows `· N toolcalls · <duration>` on completion (duration falls back to the part's own `ended - started`).
+2. **Add `N toolcalls · duration` to the completed delegate card.**  **Implemented.** The delegate card shows `· N toolcalls · <duration>` on completion (duration falls back to the part's own `ended - started`).
 
-3. **Add subagent navigation keybindings.** ✅ **Implemented.** `↑` = parent, `←` = prev child, `→` = next child (mirrors opencode's `up`/`left`/`right`), active when a subagent footer is visible and the composer is not focused. The footer buttons now display the shortcut glyphs.
+3. **Add subagent navigation keybindings.**  **Implemented.** `↑` = parent, `←` = prev child, `→` = next child (mirrors opencode's `up`/`left`/`right`), active when a subagent footer is visible and the composer is not focused. The footer buttons now display the shortcut glyphs.
 
-4. **Make the delegate card click navigate directly into the child.** ✅ **Implemented.** Clicking the delegate card (block, header, or body) calls `onSubagentClick(childID)`, which `setActiveID(childID); setView("session")` — dropping you into the child session directly. The `view subagents` hint (no childID) still opens the dialog.
+4. **Make the delegate card click navigate directly into the child.**  **Implemented.** Clicking the delegate card (block, header, or body) calls `onSubagentClick(childID)`, which `setActiveID(childID); setView("session")` — dropping you into the child session directly. The `view subagents` hint (no childID) still opens the dialog.
 
-5. **Add the amber "permission pending" tool-row highlight.** ✅ **Implemented.** The tool event id is threaded through `PermissionRequest` so `InlineTool` turns amber (`theme.warning`) while its approval is pending (matches opencode's `fg() === theme.warning`).
+5. **Add the amber "permission pending" tool-row highlight.**  **Implemented.** The tool event id is threaded through `PermissionRequest` so `InlineTool` turns amber (`theme.warning`) while its approval is pending (matches opencode's `fg() === theme.warning`).
 
-6. **Add a retry line to the delegate card.** ✅ **Implemented.** Child retries are tracked per-session (`childRetries` signal, wired via `onRetry` in `runSubagent`) and render as `↳ Retrying (attempt N) · msg` in `theme.error`.
+6. **Add a retry line to the delegate card.**  **Implemented.** Child retries are tracked per-session (`childRetries` signal, wired via `onRetry` in `runSubagent`) and render as `↳ Retrying (attempt N) · msg` in `theme.error`.
 
 **Key files changed:** `src/tui-opencode.tsx` (childActivity memo, childRetries, keybinding, runSubagent child-id link + onRetry), `src/tui-opencode-ui/session.tsx` (delegate card, InlineTool amber, SubagentButton shortcuts, `duration` export), `src/tui-opencode-ui/types.ts` (`SubagentActivity`), `src/core/agent.ts` (approval id threading).
 

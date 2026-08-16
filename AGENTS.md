@@ -551,4 +551,4 @@ If you're building on NIMBL and have questions:
 3. Open an issue on GitHub
 4. Ask in Hack Club community channels
 
-**Happy coding! 🚀**
+**Happy coding! **

@@ -30,29 +30,29 @@ The gaps below marked `[IMPLEMENTED]` are now wired into `src/tui-opencode-ui/se
 
 | Indicator | opencode | NIMBL | Status |
 |---|---|---|---|
-| Reasoning header (spinner while thinking) | ✅ `Thinking: <title>` spinner, live | ✅ `Thinking: <summary>` spinner | **Match** |
-| Thought header when done | ✅ `Thought: <title> · <duration>` | ✅ `Thought: <summary> · <duration>` | **Match** |
-| Thinking duration (live) | ❌ none while streaming (only after done) | ❌ none while streaming (only after done) | **Match (both absent)** |
-| Thinking duration (final) | ✅ from part `time.start`→`time.end` | ✅ from part `started`→`ended` | **Match** |
-| Thinking opacity (open = faded) | ✅ `theme.thinkingOpacity` alpha | ✅ same | **Match** |
-| Thinking collapse default | ✅ `hide` (KV), `+ / -` toggle | ✅ `hide` when conceal on, `+ / -` toggle | **Match** |
-| Title extraction (`**Title**\nbody`) | ✅ `reasoningSummary` | ✅ `reasoningBody` | **Match** |
-| User message timestamp | ✅ `Locale.todayTimeOrDateTime` (toggleable) | ✅ custom `timeLabel` (toggleable) | **Match** |
-| Assistant footer: mode · model · duration | ✅ | ✅ | **Match** |
-| Assistant footer: `· interrupted` | ✅ on abort | ❌ | **Gap** |
-| Assistant duration basis | ⚠️ user-msg `time.created` → msg `time.completed` | ⚠️ assistant msg `time` → `completed` | **Difference** |
-| QUEUED badge | ✅ | ✅ | **Match** |
-| Compaction divider | ✅ ` Compaction ` | ✅ | **Match** |
-| Retry banner (countdown in prompt) | ✅ `[retrying in Xs attempt #N]` + `(click to expand)` | ⚠️ toast only `Retrying request (N/3)` | **Gap** |
-| Retry "gemini is way too hot right now" | ✅ easter egg | ❌ | **Gap** |
-| Subagent footer usage `tokens (pct) · cost` | ✅ | ✅ (tokens/cost) | **Match** |
-| Subagent task card timing | ✅ `↳ N toolcalls · duration` | ⚠️ no duration on subagent card | **Gap** |
-| Tool card elapsed time | ❌ none in opencode either | ❌ none | **Match** |
-| Prompt busy spinner | ✅ native `<spinner>` (renderer-driven) | ✅ custom Spinner (renderer-driven now) | **Match** |
-| `esc interrupt` hint | ✅ + `again to interrupt` | ✅ same | **Match** |
-| Session/context cost display | ✅ sidebar `Context tokens/pct/spent` | ✅ sidebar `Context tokens/pct/cost` | **Match** |
-| `Locale.duration` format | ✅ `ms`→`s`→`m s`→`h m`→`d h` | ✅ `ms`→`s`→`m s`→`m`→`h m`→`m` | **Minor difference** |
-| Total elapsed / session time | ⚠️ only per-message duration, no running total | ⚠️ same | **Match (both absent)** |
+| Reasoning header (spinner while thinking) |  `Thinking: <title>` spinner, live |  `Thinking: <summary>` spinner | **Match** |
+| Thought header when done |  `Thought: <title> · <duration>` |  `Thought: <summary> · <duration>` | **Match** |
+| Thinking duration (live) |  none while streaming (only after done) |  none while streaming (only after done) | **Match (both absent)** |
+| Thinking duration (final) |  from part `time.start`→`time.end` |  from part `started`→`ended` | **Match** |
+| Thinking opacity (open = faded) |  `theme.thinkingOpacity` alpha |  same | **Match** |
+| Thinking collapse default |  `hide` (KV), `+ / -` toggle |  `hide` when conceal on, `+ / -` toggle | **Match** |
+| Title extraction (`**Title**\nbody`) |  `reasoningSummary` |  `reasoningBody` | **Match** |
+| User message timestamp |  `Locale.todayTimeOrDateTime` (toggleable) |  custom `timeLabel` (toggleable) | **Match** |
+| Assistant footer: mode · model · duration |  |  | **Match** |
+| Assistant footer: `· interrupted` |  on abort |  | **Gap** |
+| Assistant duration basis |  user-msg `time.created` → msg `time.completed` |  assistant msg `time` → `completed` | **Difference** |
+| QUEUED badge |  |  | **Match** |
+| Compaction divider |  ` Compaction ` |  | **Match** |
+| Retry banner (countdown in prompt) |  `[retrying in Xs attempt #N]` + `(click to expand)` |  toast only `Retrying request (N/3)` | **Gap** |
+| Retry "gemini is way too hot right now" |  easter egg |  | **Gap** |
+| Subagent footer usage `tokens (pct) · cost` |  |  (tokens/cost) | **Match** |
+| Subagent task card timing |  `↳ N toolcalls · duration` |  no duration on subagent card | **Gap** |
+| Tool card elapsed time |  none in opencode either |  none | **Match** |
+| Prompt busy spinner |  native `<spinner>` (renderer-driven) |  custom Spinner (renderer-driven now) | **Match** |
+| `esc interrupt` hint |  + `again to interrupt` |  same | **Match** |
+| Session/context cost display |  sidebar `Context tokens/pct/spent` |  sidebar `Context tokens/pct/cost` | **Match** |
+| `Locale.duration` format |  `ms`→`s`→`m s`→`h m`→`d h` |  `ms`→`s`→`m s`→`m`→`h m`→`m` | **Minor difference** |
+| Total elapsed / session time |  only per-message duration, no running total |  same | **Match (both absent)** |
 
 ---
 
@@ -173,11 +173,11 @@ Neither opencode nor NIMBL shows a **running total** of thinking time across a s
 
 | Where | opencode | NIMBL |
 |---|---|---|
-| Per assistant message | ✅ `· duration` (end-to-end from user msg) | ✅ `· duration` (from assistant msg) |
-| Per reasoning part | ✅ `· duration` (after part ends) | ✅ `· duration` (after part ends) |
-| Per subagent task card | ✅ `· duration` | ❌ |
-| **Whole-session elapsed** | ❌ none | ❌ none |
-| **Cumulative thinking time** | ❌ none | ❌ none |
+| Per assistant message |  `· duration` (end-to-end from user msg) |  `· duration` (from assistant msg) |
+| Per reasoning part |  `· duration` (after part ends) |  `· duration` (after part ends) |
+| Per subagent task card |  `· duration` |  |
+| **Whole-session elapsed** |  none |  none |
+| **Cumulative thinking time** |  none |  none |
 
 **opencode does not display a session-total time or a cumulative thinking total.** If NIMBL should show "total thinking time afterwards," that is a **new feature** in both — we would add e.g. a `/stats` line or a footer metric summing `part.ended - part.started` across reasoning parts.
 
@@ -187,13 +187,13 @@ Neither opencode nor NIMBL shows a **running total** of thinking time across a s
 
 | # | Indicator | opencode | NIMBL now | Effort |
 |---|---|---|---|---|
-| 1 | Assistant footer `· interrupted` on abort | ✅ | ❌ | Small — add `error?.name === "MessageAbortedError"` → suffix; gate footer on last/final/aborted |
-| 2 | Assistant duration basis (end-to-end from user msg) | ✅ | ❌ (assistant msg only) | Small — pass the parent user message `time` into `AssistantMessage` |
-| 3 | Retry banner in prompt footer (`[retrying in Xs attempt #N]`, click-to-expand, Gemini easter egg) | ✅ | ❌ (toast only) | Medium — thread retry state into the prompt footer |
-| 4 | Subagent task card `· duration` + toolcall count | ✅ | ❌ | Small — emit/use task timing in the delegate card |
-| 5 | Independent persisted thinking-visibility toggle (`/thinking`) | ✅ | ❌ (tied to conceal) | Small–Medium |
-| 6 | Duration formatter parity (`1.5s`, day ladder) | ✅ | ⚠️ | Trivial |
-| 7 | **New:** cumulative thinking time / session elapsed in `/stats` | ❌ both | ❌ both | New feature if desired |
+| 1 | Assistant footer `· interrupted` on abort |  |  | Small — add `error?.name === "MessageAbortedError"` → suffix; gate footer on last/final/aborted |
+| 2 | Assistant duration basis (end-to-end from user msg) |  |  (assistant msg only) | Small — pass the parent user message `time` into `AssistantMessage` |
+| 3 | Retry banner in prompt footer (`[retrying in Xs attempt #N]`, click-to-expand, Gemini easter egg) |  |  (toast only) | Medium — thread retry state into the prompt footer |
+| 4 | Subagent task card `· duration` + toolcall count |  |  | Small — emit/use task timing in the delegate card |
+| 5 | Independent persisted thinking-visibility toggle (`/thinking`) |  |  (tied to conceal) | Small–Medium |
+| 6 | Duration formatter parity (`1.5s`, day ladder) |  |  | Trivial |
+| 7 | **New:** cumulative thinking time / session elapsed in `/stats` |  both |  both | New feature if desired |
 
 ---
 

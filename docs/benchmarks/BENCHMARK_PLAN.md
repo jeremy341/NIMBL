@@ -125,7 +125,7 @@ Then compare against opencode. Report table:
 > 68/75 at ~20% more tokens; opencode solved 75/75). After the root-cause fixes, the final
 > run-6/7 (tag `1786808124244` + `1786811591640`) **did** reproduce savings: NIMBL solved 67–69/75
 > (89–92%) vs opencode 75/75, at **40–44% fewer tokens per solved task** (26.2–28.0k vs 46.8k) and
-> ~38% lower latency. See [docs/TIER_B_FINAL_RESULTS.md](./TIER_B_FINAL_RESULTS.md) for the
+> ~38% lower latency. See [docs/benchmarks/TIER_B_FINAL_RESULTS.md](./TIER_B_FINAL_RESULTS.md) for the
 > per-task/category tables, the shell-mismatch / analysis-paralysis / delegation-overhead root
 > causes, and the actionable fixes (shell-hint in the bash tool description, verify-after-edit
 > nudge, delegate token budget).
@@ -154,10 +154,10 @@ Then compare against opencode. Report table:
 
 ## 5. Summary — the benchmark set we should run
 
-1. **Retrieval benchmark** (synthetic, CI) — context quality, per mode. ✔ exists
-2. **Agent task benchmark** (synthetic + live) — solve rate + tokens + cost + latency, per mode. ✔ exists
-3. **Cross-harness comparison vs opencode** (live, same model) — the headline "token-efficient at equal quality" claim. ✔ exists (needs NIMBL custom-provider support for true parity)
-4. **Ablation matrix** — prove which config is most token-efficient without quality loss. ✔ exists (via modes)
+1. **Retrieval benchmark** (synthetic, CI) — context quality, per mode.  exists
+2. **Agent task benchmark** (synthetic + live) — solve rate + tokens + cost + latency, per mode.  exists
+3. **Cross-harness comparison vs opencode** (live, same model) — the headline "token-efficient at equal quality" claim.  exists (needs NIMBL custom-provider support for true parity)
+4. **Ablation matrix** — prove which config is most token-efficient without quality loss.  exists (via modes)
 5. **Release gate** — commit raw JSONL + git revision with every savings claim.
 
 The single most important step was adding a **NIMBL custom-provider/baseURL override** so both harnesses run the exact same model — that's now done (`NIMBL_CUSTOM_*` env vars + auto-derivation in compare-run), and a reference live run (netic deepseek-v4-flash-free) shows NIMBL solving all 6 tasks at equal quality with 26–65% fewer tokens. Next: a bigger, difficulty-spread corpus and committed raw results per release.

@@ -6,12 +6,12 @@ NIMBL is a CLI-based AI coding companion built in TypeScript that helps you code
 
 ## Features
 
-- ⚡ **Context-Conscious** — Selects focused excerpts locally instead of sending project-wide dumps
-- 🎓 **Learning-Focused** — Explain and Learn modes encourage questions, hints, and practice
-- 🔄 **Multi-Provider** — Works with the providers in NIMBL's configured provider catalog
-- 🚀 **Lightweight CLI** — No bloat, keyboard-driven, terminal-native
-- 🎨 **Black & Green Theme** — Inspired by `btop` and `lazygit`
-- 💰 **Budget-Conscious** — Works with free tier models (Groq, Google, Mistral, etc.)
+-  **Context-Conscious** — Selects focused excerpts locally instead of sending project-wide dumps
+-  **Learning-Focused** — Explain and Learn modes encourage questions, hints, and practice
+-  **Multi-Provider** — Works with the providers in NIMBL's configured provider catalog
+-  **Lightweight CLI** — No bloat, keyboard-driven, terminal-native
+-  **Black & Green Theme** — Inspired by `btop` and `lazygit`
+-  **Budget-Conscious** — Works with free tier models (Groq, Google, Mistral, etc.)
 
 ## Quick Start
 
@@ -202,4 +202,4 @@ MIT License — See LICENSE file for details
 
 ---
 
-**Made with ❤️ for Hack Club members and budget-conscious developers.**
+**Made with  for Hack Club members and budget-conscious developers.**

@@ -14,10 +14,10 @@
 
 ## Prerequisite state
 - [x] Baseline commit `ec114c8` committed + pushed (fallback point)
-- [x] Failure analysis written (`docs/FAILURE_ANALYSIS_LH_MF_SH.md`)
-- [x] Research papers cataloged (`docs/TIER_B_RESEARCH_PAPERS.md`, `docs/BRAINSTORM.md`)
-- [x] Harness comparison written (`docs/HARNESS_COMPARISON.md`)
-- [x] Combined improvement doc written (`docs/IMPROVEMENT_BRAINSTORM_AND_HARNESSES.md`)
+- [x] Failure analysis written (`docs/benchmarks/FAILURE_ANALYSIS_LH_MF_SH.md`)
+- [x] Research papers cataloged (`docs/benchmarks/TIER_B_RESEARCH_PAPERS.md`, `docs/benchmarks/BRAINSTORM.md`)
+- [x] Harness comparison written (`docs/benchmarks/IMPROVEMENT_BRAINSTORM_AND_HARNESSES.md`)
+- [x] Combined improvement doc written (`docs/benchmarks/IMPROVEMENT_BRAINSTORM_AND_HARNESSES.md`)
 - [x] Master plan + this plan committed (`0511fb0`)
 
 ---
@@ -28,7 +28,7 @@
 > **Exit:** tier-b rerun shows `lh-fix-all` 0/12 → 6+/12 and `sh-hidden-green`/`mf-quote-margin`
 > improve, without raising per-solved tokens on easy tasks.
 
-- [x] **A.1 Audit loop research → failure analysis** (`docs/FAILURE_ANALYSIS_LH_MF_SH.md`).
+- [x] **A.1 Audit loop research → failure analysis** (`docs/benchmarks/FAILURE_ANALYSIS_LH_MF_SH.md`).
 - [x] **A.2 Hard read-to-edit gate** — track `readsSinceEdit` in the `runAgent` closure
   (increment on read/glob/grep execute, reset on edit/write/apply_patch). When ≥ `readBudget`
   (default 12), the `read` tool **returns a directive instead of content** ("Investigation budget
@@ -153,6 +153,6 @@ negative (~−25%), but it **must be restated per category**, not as one headlin
 ## Standing rules
 - **Commit + push after each sprint** (small fallback points; never lose a working state).
 - **Benchmark before/after each change** on the tier-b corpus; keep the −40% token claim intact
-  (quality must not regress — `docs/BENCHMARK_PLAN.md`).
+  (quality must not regress — `docs/benchmarks/BENCHMARK_PLAN.md`).
 - **No secrets in commits** — keys via env only.
 - **Verify with `bun test` + `bun run typecheck`** after each sprint.

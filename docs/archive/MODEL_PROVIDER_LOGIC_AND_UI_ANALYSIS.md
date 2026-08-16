@@ -65,8 +65,8 @@ From models.dev (verified) and live endpoints:
 
 | | NIMBL opencode-go | models.dev opencode-go | opencode (Zen) |
 |---|---|---|---|
-| baseURL | `https://opencode.ai/zen/v1` ❌ | `https://opencode.ai/zen/go/v1` | `https://opencode.ai/zen/v1` |
-| env key | `OPENCODE_GO_API_KEY` ❌ | `OPENCODE_API_KEY` | `OPENCODE_API_KEY` |
+| baseURL | `https://opencode.ai/zen/v1`  | `https://opencode.ai/zen/go/v1` | `https://opencode.ai/zen/v1` |
+| env key | `OPENCODE_GO_API_KEY`  | `OPENCODE_API_KEY` | `OPENCODE_API_KEY` |
 | model count | **3** (static) | **25** | **91** (45 active live) |
 | `deepseek-v4-flash` | **missing** | present | present |
 | `minimax-m2.5` | shown | **deprecated** (Go) | deprecated |

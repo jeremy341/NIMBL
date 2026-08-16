@@ -5,7 +5,7 @@ offer concrete, implementable improvements. Each paper is mapped to the NIMBL mo
 directly informs. This mirrors how the current backend (hybrid retrieval, graph expansion,
 prompt caching, request budgeting, Socratic teaching) was modeled after prior research.
 
-**Companion doc:** `docs/FAILURE_ANALYSIS_LH_MF_SH.md` explains *why* NIMBL fails on
+**Companion doc:** `docs/benchmarks/FAILURE_ANALYSIS_LH_MF_SH.md` explains *why* NIMBL fails on
 long-horizon/multi-file/shell-loop tasks; the highest-impact papers here (Tier 1) are the fixes.
 
 ---

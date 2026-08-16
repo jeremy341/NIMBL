@@ -90,6 +90,11 @@ export interface AgentRunOptions {
    * When set, they choose the per-class step budget; otherwise the last user
    * message is classified lexically. */
   taskTags?: string[]
+  /** Override the classifier's retrieval item limit (0 = skip project context
+   * selection entirely). Delegated children whose prompts already enumerate the
+   * files to read use a tight limit so their research pass does not re-pay the
+   * parent's project-wide retrieval on every child step. */
+  retrievalLimit?: number
   maxAttempts?: number
   maxTokens?: number
   doomLoopThreshold?: number
@@ -216,7 +221,11 @@ export function retryable(error: unknown) {
   }
   const status = "statusCode" in error ? Number(error.statusCode) : "status" in error ? Number(error.status) : 0
   const code = "code" in error ? String(error.code) : ""
-  return status === 408 || status === 409 || status === 429 || status >= 500 || ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN"].includes(code)
+  if (status === 408 || status === 409 || status === 429 || status >= 500 || ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN"].includes(code)) return true
+  // Some proxies (e.g. netic) answer load-shedding with HTTP 200 + an OpenAI-style
+  // error body, so status/code are absent; the message is the only signal.
+  const message = error instanceof Error ? error.message : ""
+  return /rate limit|too many requests|overloaded|temporarily|handling many requests|retry in a few seconds|ECONN|ETIMEDOUT|EAI_AGAIN|429|50\d/i.test(message)
 }
 
 /** Convert an AI SDK stream error part into a readable provider error. */
@@ -309,11 +318,37 @@ export function pruneOldToolResults(messages: readonly unknown[], tail = 6, minC
       if (toolName === "edit" || toolName === "apply_patch" || toolName === "write") return part
       if (/^Error:/i.test(text)) return part
       changed = true
-      return { ...(part as object), output: `[Old ${toolName} output cleared to save context space (${text.length} chars)]` } as unknown
+      // The AI SDK v7 model-message schema only accepts structured tool outputs
+      // ({type:"text",value} etc.); a bare string stub fails validateTypes on the
+      // next step, so the marker must keep the structured shape.
+      return { ...(part as object), output: { type: "text", value: `[Old ${toolName} output cleared to save context space (${text.length} chars)]` } } as unknown
     })
     return { ...(message as object), content: parts } as unknown
   })
   return changed ? next : (messages as unknown[])
+}
+
+/**
+ * Graceful context-overflow fallback (A.1 / BRAINSTORM §12 #1): when a long
+ * tool loop's accumulated history would exceed the model window, drop the
+ * OLDEST messages (keeping the first user message and a recent tail) instead
+ * of throwing, so a step-cap continuation never dies with a non-retryable
+ * "Tool-loop context reached" error (the 18 zeroed runs in the StreamLake run).
+ * Returns the same array reference when the input already fits.
+ */
+export function trimMessagesToWindow(messages: readonly unknown[], budgetChars: number, charCost: (text: string) => number): unknown[] {
+  if (messages.length <= 2) return messages as unknown[]
+  const keepTail = 4
+  const start = messages[0]
+  const tailStart = Math.max(1, messages.length - keepTail)
+  const trimmed = [start, ...(messages as unknown[]).slice(tailStart)]
+  const text = JSON.stringify(trimmed)
+  if (charCost(text) <= budgetChars) return trimmed
+  // Still over: drop the oldest single message and recurse (never the first
+  // user goal, never more than keepTail).
+  const next = [start, ...(messages as unknown[]).slice(tailStart + 1)]
+  if (next.length <= 2) return messages as unknown[]
+  return trimMessagesToWindow(next, budgetChars, charCost)
 }
 
 function wait(ms: number, signal?: AbortSignal) {
@@ -407,7 +442,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   // Edits made since the last bash run, used only to phrase the gate message with
   // a verify nudge (A.4); the read gate itself does not require a test per edit.
   let pendingEdits = 0
-  const readGateBudget = options.readBudget ?? 12
+  const readGateBudget = options.readBudget ?? 8
   const enforceReadGate = options.mode === "build"
   const gateDirective = () => {
     const verifyNote = pendingEdits > 0 ? ` You have ${pendingEdits} unverified edit(s) since the last command run; run the relevant test (bash) to verify them before continuing to read.` : ""
@@ -697,7 +732,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       },
     }),
     delegate: tool({
-      description: "Delegate a clearly-separated subtask to a child NIMBL session. A child session restarts context and costs another full round of retrieval and tool setup, so prefer doing work inline in the current session; only delegate when the subtask is genuinely independent (e.g. a large self-contained research task or a separate module) and you cannot proceed without it. Child work is limited by provider context/output, tool steps, approvals, and delegation depth.",
+      description: "Delegate a clearly-separated subtask to a child NIMBL session. A child session restarts context and costs another full round of retrieval and tool setup, so prefer doing work inline in the current session; only delegate when the subtask is genuinely independent (e.g. a large self-contained research task or a separate module) and you cannot proceed without it. Child work is limited by provider context/output, tool steps, approvals, and delegation depth. Use agent \"plan\" for read-only research passes; \"learn\" is for interactive teaching and is never appropriate for delegated research. When the child returns a report citing files and lines, treat it as authoritative and do not re-read the cited files in the parent session.",
       inputSchema: z.object({ prompt: z.string().min(1), agent: z.enum(["build", "plan", "explain", "learn"]).optional() }),
       execute: async ({ prompt, agent }) => {
         const event = toolID(); emitTool({ id: event, tool: "delegate", state: "running", title: "Delegate task", detail: prompt })
@@ -733,7 +768,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   // long-horizon/shell-loop/multi-file families unlock more turns.
   const classified = classifyTask(options.messages.at(-1)?.text || "", options.taskTags)
   const stepBudget = Math.min(classified.maxToolSteps, options.maxToolSteps ?? MAX_TOOL_STEPS)
-  const selectedContext = await selectProjectContextWithBudget(options.root, options.messages.at(-1)?.text || "", classified.retrievalLimit, Math.min(modelDefinition.contextWindow * 4, 500_000), { index: options.contextIndex })
+  const selectedContext = await selectProjectContextWithBudget(options.root, options.messages.at(-1)?.text || "", options.retrievalLimit ?? classified.retrievalLimit, Math.min(modelDefinition.contextWindow * 4, 500_000), { index: options.contextIndex })
   const skillGuidance = availableSkillGuidance(selectRelevantSkills(
     discoverSkills(options.root, options.settings).filter((skill) => permissionFor(options.permissions, { tool: "skill", target: skill.name }) !== "deny"),
     options.messages.at(-1)?.text || "",
@@ -792,6 +827,12 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   // steps, not a fresh full budget (Kimi: attempts ≠ steps). Transient provider
   // retries do not consume it — their tool calls never execute into the stream.
   let executedToolSteps = 0
+  // A.1 Cap step-cap continuation re-arms: each re-arm replays the whole
+  // history at ~1 step, so beyond 3 it only burns tokens on dead attempts.
+  // On cap, fall through and return the last partial result instead of
+  // looping to maxAttempts and risking a context-overflow throw.
+  const MAX_CONTINUATIONS = 3
+  let continuations = 0
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     attemptActivity = false
     // Step-cap continuation replays the same user goal with accumulated tool
@@ -829,12 +870,21 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           }
           const dynamicTokens = countTextTokens(JSON.stringify({ instructions, messages }), modelDefinition).tokens
           const projected = dynamicTokens + fitted.budget.toolSchemas + fitted.budget.outputReservation + fitted.budget.safetyMargin
-          if (projected > modelDefinition.contextWindow) throw new Error(`Tool-loop context reached ${projected} tokens, above ${modelDefinition.name}'s ${modelDefinition.contextWindow}-token window.`)
+          if (projected > modelDefinition.contextWindow) {
+            // A.1 Graceful overflow instead of a non-retryable throw: long
+            // step-cap continuations accumulate huge histories; dropping the
+            // oldest messages keeps the run alive (no more zeroed runs). Only
+            // throw if even the irreducible core cannot fit.
+            const budgetChars = Math.max(1_000, Math.floor((modelDefinition.contextWindow - fitted.budget.toolSchemas - fitted.budget.outputReservation - fitted.budget.safetyMargin) * 3.5))
+            const trimmed = trimMessagesToWindow(messages, budgetChars, (text) => countTextTokens(text, modelDefinition).tokens)
+            if (trimmed !== messages) return { messages: trimmed as any }
+            throw new Error(`Tool-loop context reached ${projected} tokens, above ${modelDefinition.name}'s ${modelDefinition.contextWindow}-token window.`)
+          }
           // Read-to-edit budget: if the agent has made many read-only tool calls
           // since the last edit without committing anything, inject a directive so
           // the next model turn acts instead of continuing to audit.
           const readsSinceEdit = countReadsSinceEdit(steps.map((step) => step.toolCalls.map((call) => call.toolName)))
-          if (readsSinceEdit >= (options.readBudget ?? 12)) {
+          if (readsSinceEdit >= (options.readBudget ?? 8)) {
             const prior = instructions ? (typeof instructions === "string" ? instructions : String(instructions)) : ""
             return {
               instructions: [prior, `Investigation budget reached: ${readsSinceEdit} read-only tool calls since the last edit with no file change. Make the focused edit now and verify it, or stop investigating and answer directly. Do not issue further reads without acting.`].filter(Boolean).join("\n\n"),
@@ -852,15 +902,22 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         if (part.type === "tool-call") {
           executedToolSteps++
           const call = part as unknown as { toolName?: string; input?: unknown; args?: unknown }
-          const fingerprint = JSON.stringify([call.toolName, call.input ?? call.args])
+          // The doom-loop guard protects against the read/glob/grep *audit loop*.
+          // bash is deliberately excluded: re-running the same verification
+          // command (e.g. `bun test`) between edits is the legitimate
+          // shell-loop pattern, not a stuck loop (the 15 zeroed runs in the
+          // zeroed-fix preflight were all shell-loop tasks killed on a 3rd
+          // identical `bash bun test` call).
+          const toolName = call.toolName || "tool"
+          const fingerprint = toolName === "bash" ? `bash-${toolID()}` : JSON.stringify([toolName, call.input ?? call.args])
           const count = (repeatedToolCalls.get(fingerprint) || 0) + 1
           repeatedToolCalls.set(fingerprint, count)
-          options.onTaskEvent?.({ type: "step", detail: `${call.toolName || "tool"} step ${count}` })
-          if (count >= (options.doomLoopThreshold ?? 3)) {
+          options.onTaskEvent?.({ type: "step", detail: `${toolName} step ${count}` })
+          if (toolName !== "bash" && count >= (options.doomLoopThreshold ?? 3)) {
             // Ask once per fingerprint; an approved fingerprint may continue.
             if (!allowedRepeatedCalls.has(fingerprint)) {
-              options.onTaskEvent?.({ type: "doom-loop", detail: `Repeated ${call.toolName || "tool"} call detected.` })
-              await askDoomLoop(call.toolName || "tool")
+              options.onTaskEvent?.({ type: "doom-loop", detail: `Repeated ${toolName} call detected.` })
+              await askDoomLoop(toolName)
               allowedRepeatedCalls.add(fingerprint)
             }
           }
@@ -893,7 +950,8 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       // thrown error, so the retry loop never re-arms. Append the accumulated
       // assistant/tool messages plus a one-line continuation prompt and retry,
       // bounded by maxAttempts. Only fires on real activity, never on clean stops.
-      if (finalStep?.finishReason === "tool-calls" && attemptActivity && attempt < maxAttempts && !options.abortSignal?.aborted) {
+      if (finalStep?.finishReason === "tool-calls" && attemptActivity && attempt < maxAttempts && continuations < MAX_CONTINUATIONS && !options.abortSignal?.aborted) {
+        continuations++
         let continuedMessages: unknown[] = []
         try {
           const responseMessages = await result.responseMessages

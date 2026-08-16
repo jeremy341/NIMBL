@@ -13,7 +13,7 @@ vi.mock("ai", () => ({
 vi.mock("@ai-sdk/openai", () => ({ createOpenAI: () => Object.assign(() => ({}), { chat: () => ({}), responses: () => ({}) }) }))
 vi.mock("@ai-sdk/anthropic", () => ({ createAnthropic: () => () => ({}) }))
 
-import { runAgent, countReadsSinceEdit, pruneOldToolResults } from "@/core/agent"
+import { runAgent, countReadsSinceEdit, pruneOldToolResults, trimMessagesToWindow } from "@/core/agent"
 
 describe("agent execution", () => {
   beforeEach(() => {
@@ -550,6 +550,39 @@ describe("agent execution", () => {
     expect(requestApproval).not.toHaveBeenCalled()
   })
 
+  it("does not treat repeated bash verification calls as a doom loop", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-doombash-"))
+    const requestApproval = vi.fn(async () => "once" as const)
+
+    streamText.mockImplementationOnce((config: any) => ({
+      fullStream: {
+        async *[Symbol.asyncIterator]() {
+          for (let i = 0; i < 6; i++) {
+            yield { type: "tool-call", toolName: "bash", input: { command: "bun test" }, toolCallId: `call-${i}` }
+          }
+          yield { type: "text-delta", text: "done" }
+        },
+      },
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    }))
+
+    const result = await runAgent({
+      root,
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "build",
+      messages: [{ role: "user", text: "run tests until green" }],
+      permissions: { "*": "allow", doom_loop: "deny" },
+      requestApproval,
+      onEvent: () => {},
+      doomLoopThreshold: 2,
+    })
+
+    expect(result.text).toBe("done")
+    expect(requestApproval).not.toHaveBeenCalled()
+  })
+
   it("counts reads since the last edit for the read-to-edit budget", () => {
     expect(countReadsSinceEdit([
       ["read", "grep", "glob"],
@@ -738,11 +771,16 @@ describe("agent execution", () => {
       tool("c7", "tail-long".repeat(100)),
     ]
 
-    const pruned = pruneOldToolResults(messages, 2, 200) as Array<{ content: Array<{ type: string; output?: string; toolName?: string }> }>
-    // Old read outputs are stubbed; the tool message itself is preserved.
-    expect(pruned[1]!.content[0]!.output).toContain("[Old read output cleared")
-    expect(pruned[2]!.content[0]!.output).toContain("[Old read output cleared")
-    expect(pruned[3]!.content[0]!.output).toContain("[Old read output cleared")
+    const pruned = pruneOldToolResults(messages, 2, 200) as Array<{ content: Array<{ type: string; output?: string | { type: string; value: string }; toolName?: string }> }>
+    // Old read outputs are stubbed; the tool message itself is preserved. The
+    // stub keeps the AI SDK v7 structured output shape ({type:"text",value}).
+    const stubOf = (index: number) => {
+      const output = pruned[index]!.content[0]!.output ?? ""
+      return typeof output === "string" ? output : output.value
+    }
+    expect(stubOf(1)).toContain("[Old read output cleared")
+    expect(stubOf(2)).toContain("[Old read output cleared")
+    expect(stubOf(3)).toContain("[Old read output cleared")
     // The last 2 tool messages are the protected tail.
     expect(pruned[6]!.content[0]!.output).toBe("tail-short")
     expect(pruned[7]!.content[0]!.output).toBe("tail-long".repeat(100))
@@ -757,6 +795,32 @@ describe("agent execution", () => {
       { role: "tool", content: [{ type: "tool-result", toolCallId: "c1", toolName: "read", output: "short" }] },
     ]
     expect(pruneOldToolResults(messages, 6, 200)).toBe(messages)
+  })
+
+  describe("A.1 graceful context overflow (trimMessagesToWindow)", () => {
+    const chars = (text: string) => text.length
+
+    it("keeps a short history unchanged", () => {
+      const messages = [{ role: "user", content: "hi" }, { role: "assistant", content: "ok" }]
+      expect(trimMessagesToWindow(messages, 1_000_000, chars)).toBe(messages)
+    })
+
+    it("drops the oldest messages while keeping the first user goal and a recent tail", () => {
+      const messages = Array.from({ length: 20 }, (_, i) => ({
+        role: i % 2 === 0 ? "user" : "assistant",
+        content: `message ${i} `.repeat(50),
+      }))
+      const budget = chars(JSON.stringify([messages[0], messages[19]])) + 10
+      const trimmed = trimMessagesToWindow(messages, budget, chars) as Array<{ role: string; content: string }>
+      expect(trimmed.length).toBeLessThan(messages.length)
+      expect(trimmed[0]).toBe(messages[0])
+      expect(trimmed[trimmed.length - 1]).toBe(messages[messages.length - 1])
+    })
+
+    it("returns the input unchanged when even the irreducible core cannot fit", () => {
+      const messages = [{ role: "user", content: "only" }, { role: "assistant", content: "two" }]
+      expect(trimMessagesToWindow(messages, 1, chars)).toBe(messages)
+    })
   })
 
   describe("Sprint C per-class step budgets", () => {

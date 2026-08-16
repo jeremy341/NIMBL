@@ -469,7 +469,7 @@ async function runBenchmarkItem(shared: BenchmarkShared, item: BenchmarkWorkItem
   const retryWaitMs = shared.runRetryWaitMs
   let workspace = ""
   let events: AgentEvent[] = []
-  let subagentRuns: { id: string; prompt: string; agent?: string; inputTokens: number; outputTokens: number; totalTokens: number; cacheReadTokens: number; cacheWriteTokens: number; latencyMs: number }[] = []
+  let subagentRuns: { id: string; prompt: string; agent?: string; childSteps: number; inputTokens: number; outputTokens: number; totalTokens: number; cacheReadTokens: number; cacheWriteTokens: number; latencyMs: number }[] = []
   let outcome: OkRun | FailedRun | undefined
   for (let runAttempt = 1; runAttempt <= maxRunAttempts; runAttempt++) {
     // Fresh copy per (task, sample, mode, attempt) so edits never leak.
@@ -482,6 +482,11 @@ async function runBenchmarkItem(shared: BenchmarkShared, item: BenchmarkWorkItem
       const childStart = Date.now()
       const childEvents: AgentEvent[] = []
       try {
+        // Sprint C+: children whose prompt already enumerates the files to read
+        // (explicit paths) get a tight retrieval limit — project-wide selection
+        // would re-pay the parent's context cost on every child step. Research
+        // children are capped at 8 tool steps: traces never exceed 6.
+        const explicitPaths = (request.prompt.match(/[\w./-]+\.(tsx?|jsx?|json|md)\b/g) || []).filter((path) => path.includes("/")).length
         const child = await runAgent({
           root: workspace,
           provider,
@@ -491,6 +496,7 @@ async function runBenchmarkItem(shared: BenchmarkShared, item: BenchmarkWorkItem
           messages: [{ role: "user", text: request.prompt }],
           contextWindow: modelDefinition.contextWindow,
           contextIndex: indexByMode.get(mode),
+          retrievalLimit: explicitPaths >= 2 ? 2 : 4,
           compression: MODE_OPTIONS[mode].compression,
           promptCache: MODE_OPTIONS[mode].promptCache,
           permissions: { "*": "allow", doom_loop: "deny" },
@@ -500,8 +506,9 @@ async function runBenchmarkItem(shared: BenchmarkShared, item: BenchmarkWorkItem
           beforeRequest: live ? () => shared.limiter.waitForToken() : undefined,
           // Sprint C: a delegated child classifies its own prompt, but its budget
           // is capped by the parent task's per-class budget so a research child
-          // can never out-spend the run that hired it.
-          maxToolSteps: Math.min(classifyTask(request.prompt).maxToolSteps, classifyTask(task.prompt, task.tags).maxToolSteps),
+          // can never out-spend the run that hired it. Research children never
+          // need more than 8 turns (traces use 3-6).
+          maxToolSteps: Math.min(8, classifyTask(request.prompt).maxToolSteps, classifyTask(task.prompt, task.tags).maxToolSteps),
           maxAttempts: live ? 5 : undefined,
           retryDelayMs: live ? 2_000 : undefined,
         })
@@ -511,6 +518,7 @@ async function runBenchmarkItem(shared: BenchmarkShared, item: BenchmarkWorkItem
         for (const event of childEvents) events.push({ ...event, kind: "subagent" as const, child: request.id } as unknown as AgentEvent)
         subagentRuns.push({
           id: request.id, prompt: request.prompt, agent: request.agent,
+          childSteps: childEvents.filter((event) => event.kind === "tool" && event.state === "completed").length,
           inputTokens: child.usage.inputTokens, outputTokens: child.usage.outputTokens,
           totalTokens: child.usage.totalTokens, cacheReadTokens: child.usage.cacheReadTokens || 0,
           cacheWriteTokens: child.usage.cacheWriteTokens || 0, latencyMs: child.latencyMs,
@@ -552,7 +560,7 @@ async function runBenchmarkItem(shared: BenchmarkShared, item: BenchmarkWorkItem
     // Transient provider outage (5xx/429/network). Trip the shared gate so other
     // parallel workers back off too, wait, then retry the whole run on a fresh
     // workspace so the sample isn't zeroed out.
-    if (/5\d\d|429|401|rate limit|too many requests|ECONN|ETIMEDOUT|EAI_AGAIN|fetch failed/i.test(outcome.message)) {
+    if (/5\d\d|429|401|rate limit|too many requests|overloaded|handling many requests|retry in a few seconds|ECONN|ETIMEDOUT|EAI_AGAIN|fetch failed/i.test(outcome.message)) {
       console.error(`[retry] ${task.id}/${mode} sample ${sample} attempt ${runAttempt} failed (${outcome.message.slice(0, 80)}); waiting ${retryWaitMs}ms`)
       shared.gate.trip()
       await new Promise((resolve) => setTimeout(resolve, retryWaitMs))
@@ -657,14 +665,14 @@ export function summarizeAgentBenchmarkRuns(runs: AgentBenchmarkRun[]): Record<s
  * baseline without regressing task quality?" Only lowers token usage when the
  * task still solves.
  */
-export function summarizeAgentBenchmarkModes(runs: AgentBenchmarkRun[]): Record<AgentBenchmarkMode, { solved: number; total: number; totalTokens: VarianceSummary; cacheReadTokens: VarianceSummary; referenceCostUsd: VarianceSummary; latencyMs: VarianceSummary; runs: number }> {
+export function summarizeAgentBenchmarkModes(runs: AgentBenchmarkRun[]): Record<AgentBenchmarkMode, { solved: number; total: number; totalTokens: VarianceSummary; cacheReadTokens: VarianceSummary; referenceCostUsd: VarianceSummary; latencyMs: VarianceSummary; toolSteps: VarianceSummary; runs: number }> {
   const byMode = new Map<AgentBenchmarkMode, AgentBenchmarkRun[]>()
   for (const run of runs) {
     const bucket = byMode.get(run.mode)
     if (bucket) bucket.push(run)
     else byMode.set(run.mode, [run])
   }
-  const summary = {} as Record<AgentBenchmarkMode, { solved: number; total: number; totalTokens: VarianceSummary; cacheReadTokens: VarianceSummary; referenceCostUsd: VarianceSummary; latencyMs: VarianceSummary; runs: number }>
+  const summary = {} as Record<AgentBenchmarkMode, { solved: number; total: number; totalTokens: VarianceSummary; cacheReadTokens: VarianceSummary; referenceCostUsd: VarianceSummary; latencyMs: VarianceSummary; toolSteps: VarianceSummary; runs: number }>
   for (const [mode, modeRuns] of byMode) {
     summary[mode] = {
       solved: modeRuns.filter((run) => run.solved).length,
@@ -673,6 +681,7 @@ export function summarizeAgentBenchmarkModes(runs: AgentBenchmarkRun[]): Record<
       cacheReadTokens: varianceSummary(modeRuns.map((run) => run.cacheReadTokens)),
       referenceCostUsd: varianceSummary(modeRuns.map((run) => run.referenceCostUsd)),
       latencyMs: varianceSummary(modeRuns.map((run) => run.latencyMs)),
+      toolSteps: varianceSummary(modeRuns.map((run) => run.toolSteps)),
       runs: modeRuns.length,
     }
   }

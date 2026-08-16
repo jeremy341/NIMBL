@@ -201,11 +201,11 @@ Main column: `scrollbox` (sticky bottom) → compaction divider → waiting indi
   | apply_patch | `%` | "Preparing patch..." | BlockTool `← Patched {path}` |
   | webfetch | `%` | "Fetching from the web..." | inline |
   | websearch | `◈` | "Searching web..." | `(N results)` |
-  | todowrite | `⚙` | "Updating todos..." | BlockTool `# Todos` |
+  | todowrite | `` | "Updating todos..." | BlockTool `# Todos` |
   | question | `→` | "Asking questions..." | `# Questions` |
   | skill | `→` | "Loading skill..." | inline |
   | delegate/task | — | — | BlockTool `# Subagent Task — {detail}` + `· {duration}` |
-  | generic w/ output | `⚙` | "Running tool..." | BlockTool `# {tool} {title}` |
+  | generic w/ output | `` | "Running tool..." | BlockTool `# {tool} {title}` |
 - **InlineTool**: running spinner `~ {pending}`; done icon+text; failed `✕ (failed)` error; rejected strikethrough `(rejected)` muted; click expands output
 - **BlockTool**: bg backgroundPanel (hover backgroundMenu), left rail; title row `+`/`−` collapse in primary, spinner while running, title muted (failed→error, rejected→strikethrough); failed detail in error
 - **OutputPreview**: ANSI-stripped; collapse to 10/3 lines; overflow `…` + "Click to expand/collapse"
@@ -238,7 +238,7 @@ Main column: `scrollbox` (sticky bottom) → compaction divider → waiting indi
 ## 11. Sidebar (`src/tui-opencode-ui/sidebar.tsx`)
 
 - Fixed width 42, bg backgroundPanel, absolute|relative for overlay mode; custom vertical scrollbar (track background, thumb borderActive)
-- Sections: session title (bold) → **Context** (`N tokens`, `N% used`, `$cost estimated provider cost`) → **Todo** (collapsible `▼`/`▶`, `[✓]`/`[•]`/`[ ]`, warning in-progress) → **Modified Files** (collapsible; `+N`/`−N` in diff colors; rough line-multiset diff) → path footer (`parent/` + basename) + `• NIMBL` (success)
+- Sections: session title (bold) → **Context** (`N tokens`, `N% used`, `$cost estimated provider cost`) → **Todo** (collapsible `▼`/``, `[✓]`/`[•]`/`[ ]`, warning in-progress) → **Modified Files** (collapsible; `+N`/`−N` in diff colors; rough line-multiset diff) → path footer (`parent/` + basename) + `• NIMBL` (success)
 
 ## 12. Docked Prompts (Permission & Question)
 
@@ -249,7 +249,7 @@ Main column: `scrollbox` (sticky bottom) → compaction divider → waiting indi
 - Keys: `←/→/h/l` cycle, `enter`, `a` → always, `ctrl+f` fullscreen, `esc` back/reject
 - **Always stage**: Confirm (`primary`)/Cancel (`warning`) chips
 - **Reject stage**: `△` error + "Reject permission" + textarea "Reason for rejection..."; enter submits (with message via onRejectWithMessage)
-- **PERMISSION_INFO** icons: read `→`, glob/grep `✱`, write `←`, edit `→`, apply_patch `%`, bash `#`, webfetch `%`, websearch `◈`, skill `→`, question `→`, todowrite `⚙`, delegate `│`, external_directory `←` "Access external directory"
+- **PERMISSION_INFO** icons: read `→`, glob/grep `✱`, write `←`, edit `→`, apply_patch `%`, bash `#`, webfetch `%`, websearch `◈`, skill `→`, question `→`, todowrite ``, delegate `│`, external_directory `←` "Access external directory"
 - **Always-allow persistence**: in-memory `alwaysAllowed` Set + writes `permissions[tool][target]="allow"` to `.nimbl/settings.json`
 
 ### QuestionPrompt

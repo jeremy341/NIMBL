@@ -192,7 +192,7 @@ NIMBL: `session.tsx` `ToolPartView` + `InlineTool`/`BlockTool` + `OutputPreview`
 | 7.16 | Tool hiding | NIMBL always shows completed tools | opencode `shouldHide` when `showDetails` false && completed | port `session.toggle.actions` (`tool_details_visibility`, default true) | PORT |
 | 7.17 | Denied styling | NIMBL strikethrough via `TextAttributes.STRIKETHROUGH` when `rejected` | opencode detects "rejected permission"/"QuestionRejectedError"/"specified a rule"/"user dismissed" → strikethrough + `~ ` pending prefix | match denied detection strings | PORT |
 | 7.18 | Pending prefix `~ ` | NIMBL spinner text has no `~` | opencode pending line = `` `~ {pending}` `` (2-col icon + `~ ` prefix) | add `~ ` prefix + 2-col icon width | PORT |
-| 7.19 | Tool icons | read→, glob/grep ✱, write←, edit←, patch %, websearch missing, task ✓/│, skill→ | opencode same + `◈` websearch, `⚙` generic, `⟳` doom_loop | align icons | PARTIAL |
+| 7.19 | Tool icons | read→, glob/grep ✱, write←, edit←, patch %, websearch missing, task ✓/│, skill→ | opencode same + `◈` websearch, `` generic, `⟳` doom_loop | align icons | PARTIAL |
 
 ---
 
@@ -335,7 +335,7 @@ NIMBL: `sidebar.tsx` (300 lines). opencode: `routes/session/sidebar.tsx` + `feat
 | 11.4 | Todo section: `Todo` + `[✓]/[•]/[ ]` rows | opencode `Todo` section, `TodoItem` identical glyphs/colors; hides when all completed | NIMBL shows empty-able? verify `showTodos` | PARTIAL |
 | 11.5 | Modified Files section: `+n`/`-n` counts | opencode identical (truncateLeft 36-width budget) | 1:1 | OK |
 | 11.6 | Footer: `path` + `• NIMBL` | opencode footer: Getting-started card (`⬖ Getting started ✕`, "OpenCode includes free models...", "Connect from 75+ providers...", `Connect provider /connect`) then dir:branch + `• Open Code {version}` | port Getting-started card (NIMBL-branded: "NIMBL includes free models...", `/provider`) | PORT |
-| 11.7 | Sections expand/collapse `▼`/`▶` when >2 items | opencode identical | 1:1 | OK |
+| 11.7 | Sections expand/collapse `▼`/`` when >2 items | opencode identical | 1:1 | OK |
 | 11.8 | MCP/LSP sections: **absent** (out of scope) | opencode MCP + LSP sections | skip (no MCP/LSP) | OK |
 
 ---

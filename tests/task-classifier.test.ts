@@ -66,7 +66,7 @@ describe("classifyTask — prompt path (production)", () => {
 
 describe("classifyTask — budgets, retrieval limits, guidance", () => {
   it("publishes the per-family step budget table", () => {
-    expect(TASK_FAMILY_STEPS).toEqual({ retrieval: 8, "single-fix": 12, "test-writing": 16, delegation: 16, "multi-file": 40, "shell-loop": 50, "long-horizon": 100 })
+    expect(TASK_FAMILY_STEPS).toEqual({ retrieval: 8, "single-fix": 12, "test-writing": 16, delegation: 20, "multi-file": 40, "shell-loop": 50, "long-horizon": 100 })
     for (const tags of [["retrieval"], ["bug-fix"], ["test-writing"], ["delegation"], ["multi-file"], ["shell-loop"], ["long-horizon"]]) {
       const task = classifyTask("anything", tags)
       expect(task.maxToolSteps).toBe(TASK_FAMILY_STEPS[task.family])
@@ -82,10 +82,24 @@ describe("classifyTask — budgets, retrieval limits, guidance", () => {
   })
 
   it("adds guidance only for corrective-behavior families", () => {
-    const guided = new Set(["multi-file", "shell-loop", "long-horizon"])
+    const guided = new Set(["multi-file", "delegation", "shell-loop", "long-horizon"])
     for (const family of Object.keys(TASK_FAMILY_STEPS)) {
       const task = classifyTask("anything", [family])
       expect(Boolean(task.guidance), family).toBe(guided.has(family))
     }
+  })
+
+  it("delegation guidance tells the parent to treat the child report as authoritative", () => {
+    const task = classifyTask("anything", ["delegation"])
+    expect(task.guidance).toContain("authoritative")
+    expect(task.guidance).toContain("startLine/endLine")
+    expect(task.guidance).toMatch(/do not re-survey/i)
+  })
+
+  it("multi-file guidance tells the agent to read only task files and batch edits", () => {
+    const task = classifyTask("anything", ["multi-file"])
+    expect(task.guidance).toMatch(/read only the files the task names/i)
+    expect(task.guidance).toMatch(/as few edit calls as possible/i)
+    expect(task.guidance).toMatch(/verify once/i)
   })
 })

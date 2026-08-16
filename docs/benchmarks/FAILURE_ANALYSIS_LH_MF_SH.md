@@ -101,7 +101,7 @@ the agent enough steps (and enough retry/planning structure) to finish, while ke
 context small. That is exactly the "teach with fewer tokens" thesis — the failure is not
 context selection, it's agent loop *execution budget*.
 
-## 6. Recommended fixes (see docs/TIER_B_RESEARCH_PAPERS.md for the literature behind each)
+## 6. Recommended fixes (see docs/benchmarks/TIER_B_RESEARCH_PAPERS.md for the literature behind each)
 
 1. **Raise/scale the step budget.** Make `maxToolSteps` task-aware (easy/medium/hard) and raise
    the hard cap (`MAX_TOOL_STEPS = 12` is the floor the benchmark also lowers). opencode's 72–102

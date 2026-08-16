@@ -31,7 +31,7 @@ export const TASK_FAMILY_STEPS: Record<TaskFamily, number> = {
   retrieval: 8,
   "single-fix": 12,
   "test-writing": 16,
-  delegation: 16,
+  delegation: 20,
   "multi-file": 40,
   "shell-loop": 50,
   "long-horizon": 100,
@@ -46,7 +46,9 @@ const GUIDANCE: Partial<Record<TaskFamily, string>> = {
   "shell-loop":
     "This task is driven by running tests: run the suite, read the failure output, fix the offending source, and re-run until green. Verify each edit with the relevant test before moving on.",
   "multi-file":
-    "This task spans multiple files or domains. Map how the modules connect before editing, track the changes with todowrite, and verify with the listed tests without weakening existing unit tests.",
+    "This task spans multiple files or domains. Read only the files the task names and the single listed verification test — do not open unrelated files or other tests. After the first pass, plan all edits, then apply them with as few edit calls as possible, batching changes across files before running any check. Verify once with the listed test; if it is red, re-read only the failing lines and the files you edited (use startLine/endLine ranges), make the minimal corrective edit, and re-run.",
+  delegation:
+    "This task requires a subagent research pass followed by a parent fix. The child session's report is authoritative: it already read the files and cited exact file paths, line numbers, and recommended changes. Implement those cited changes directly with edit, re-reading only the exact target lines (startLine/endLine) when you need fresh content for a precise oldText match. Do not re-survey files the child already read, and run the listed test once after your edits.",
 }
 
 /** Prompt-signal precedence: strongest intent wins. Ordering matters — e.g.

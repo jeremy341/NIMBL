@@ -1,6 +1,6 @@
 # NIMBL — Improvement Brainstorm & Harness Comparison (combined)
 
-> **One-stop reference** merging `docs/BRAINSTORM.md` (research-paper improvements across every
+> **One-stop reference** merging `docs/benchmarks/BRAINSTORM.md` (research-paper improvements across every
 > harness sector) and `docs/HARNESS_COMPARISON.md` (architecture comparison of 15 open-source
 > agent harnesses). Research performed 2026-08-15 from primary sources (arXiv + GitHub).
 >
@@ -9,10 +9,10 @@
 > (if any) and the harness(es) that prove it works.
 >
 > Companion docs:
-> - `docs/FAILURE_ANALYSIS_LH_MF_SH.md` — why lh/mf/sh tasks fail
-> - `docs/TIER_B_RESEARCH_PAPERS.md` — paper catalog with verified arXiv links
-> - `docs/BENCHMARK_PLAN.md` — benchmark methodology & claims rules
-> - `docs/TIER_B_FINAL_RESULTS.md` — committed final run results
+> - `docs/benchmarks/FAILURE_ANALYSIS_LH_MF_SH.md` — why lh/mf/sh tasks fail
+> - `docs/benchmarks/TIER_B_RESEARCH_PAPERS.md` — paper catalog with verified arXiv links
+> - `docs/benchmarks/BENCHMARK_PLAN.md` — benchmark methodology & claims rules
+> - `docs/benchmarks/TIER_B_FINAL_RESULTS.md` — committed final run results
 
 ---
 
@@ -48,7 +48,7 @@
 
 ## I.1 Agent loop & adaptive compute
 
-**Status:** 🟢 active priority — this is the #1 bug fix area.
+**Status:**  active priority — this is the #1 bug fix area.
 
 ### Problem recap
 Hard 8–12 step cap; no retry on step-cap; audit loop; no delegation on separable bugs.
@@ -59,13 +59,13 @@ the same `lh-fix-all` task.)
 
 | Idea | Paper | arXiv | Fixes bug? | Keeps cheap? |
 |---|---|---|---|---|
-| Adaptive per-step compute by inter-rollout action agreement (commit early on high agreement) | **TrACE** | [2604.08369](https://arxiv.org/abs/2604.08369) | partially | ✅ −33–65% calls |
-| Planner/Executor split; emit plan checklist before acting | **Plan-and-Act** | [2503.09572](https://arxiv.org/abs/2503.09572) | ✅ | ✅ plan is cheap |
-| On failure, write verbal reflection → retry with it in context | **Reflexion** | [2303.11366](https://arxiv.org/abs/2303.11366) | ✅ | ⚠️ extra pass |
-| Localize → repair → validate phase order, no free roaming | **Agentless** | [2407.01489](https://arxiv.org/abs/2407.01489) | ✅ | ✅✅ very cheap |
-| Graph-based task decomposition → dependency-aware parallel tool execution | **GAP** | [2510.25320](https://arxiv.org/abs/2510.25320) | ✅ | ✅ fewer steps |
-| Predict future tool calls from recurring patterns; execute speculatively while LLM generates | **PASTE** | [2603.18897](https://arxiv.org/abs/2603.18897) | partial | ✅ −43.5% task time |
-| Milestone checkpoints / milestone-anchored credit | **BEACON** | [2605.06078](https://arxiv.org/abs/2605.06078) | ✅ | ✅ |
+| Adaptive per-step compute by inter-rollout action agreement (commit early on high agreement) | **TrACE** | [2604.08369](https://arxiv.org/abs/2604.08369) | partially |  −33–65% calls |
+| Planner/Executor split; emit plan checklist before acting | **Plan-and-Act** | [2503.09572](https://arxiv.org/abs/2503.09572) |  |  plan is cheap |
+| On failure, write verbal reflection → retry with it in context | **Reflexion** | [2303.11366](https://arxiv.org/abs/2303.11366) |  |  extra pass |
+| Localize → repair → validate phase order, no free roaming | **Agentless** | [2407.01489](https://arxiv.org/abs/2407.01489) |  |  very cheap |
+| Graph-based task decomposition → dependency-aware parallel tool execution | **GAP** | [2510.25320](https://arxiv.org/abs/2510.25320) |  |  fewer steps |
+| Predict future tool calls from recurring patterns; execute speculatively while LLM generates | **PASTE** | [2603.18897](https://arxiv.org/abs/2603.18897) | partial |  −43.5% task time |
+| Milestone checkpoints / milestone-anchored credit | **BEACON** | [2605.06078](https://arxiv.org/abs/2605.06078) |  |  |
 | Benchmark: frontier agents need explicit reasoning + parallel tool use long-horizon | **DeepPlanning** | [2601.18137](https://arxiv.org/abs/2601.18137) | — validation | — |
 
 ### Candidate implementations
@@ -80,17 +80,17 @@ the same `lh-fix-all` task.)
 
 ## I.2 Token compression & context selection
 
-**Status:** 🟡 defense of the −40% claim; cheap wins available.
+**Status:**  defense of the −40% claim; cheap wins available.
 
 ### Papers
 
 | Idea | Paper | arXiv | Keeps cheap? |
 |---|---|---|---|
-| Extractive compression > token-pruning > summarization; ~10× compression w/ minimal degradation | **Characterizing Prompt Compression** | [2407.08892](https://arxiv.org/abs/2407.08892) | ✅ |
-| Query-aware, sentence-level excerpt pruning (post-retrieval) | **LLMLingua-2 / TACO-RL / CPC / ICPC / DAC / PIS** | [2403.12968](https://arxiv.org/abs/2403.12968) [2409.13035](https://arxiv.org/abs/2409.13035) [2409.01227](https://arxiv.org/abs/2409.01227) [2501.01625](https://arxiv.org/abs/2501.01625) [2507.11942](https://arxiv.org/abs/2507.11942) [2504.16574](https://arxiv.org/abs/2504.16574) | ✅ no extra LLM |
-| Generative / attention-only compression (heavier optional path) | **SCOPE / AOC** | [2508.15813](https://arxiv.org/abs/2508.15813) [2501.06730](https://arxiv.org/abs/2501.06730) | ⚠️ heavier |
-| Query-aware compression is provably better (rate-distortion) | **Fundamental Limits** | [2407.15504](https://arxiv.org/abs/2407.15504) | ✅ |
-| ⚠️ Aggressive compression can *increase* cost (output tokens dominate); moderate (r=0.5) saves 27.9% | **Production compression trial** | [2603.23525](https://arxiv.org/abs/2603.23525) | ⚠️ warning |
+| Extractive compression > token-pruning > summarization; ~10× compression w/ minimal degradation | **Characterizing Prompt Compression** | [2407.08892](https://arxiv.org/abs/2407.08892) |  |
+| Query-aware, sentence-level excerpt pruning (post-retrieval) | **LLMLingua-2 / TACO-RL / CPC / ICPC / DAC / PIS** | [2403.12968](https://arxiv.org/abs/2403.12968) [2409.13035](https://arxiv.org/abs/2409.13035) [2409.01227](https://arxiv.org/abs/2409.01227) [2501.01625](https://arxiv.org/abs/2501.01625) [2507.11942](https://arxiv.org/abs/2507.11942) [2504.16574](https://arxiv.org/abs/2504.16574) |  no extra LLM |
+| Generative / attention-only compression (heavier optional path) | **SCOPE / AOC** | [2508.15813](https://arxiv.org/abs/2508.15813) [2501.06730](https://arxiv.org/abs/2501.06730) |  heavier |
+| Query-aware compression is provably better (rate-distortion) | **Fundamental Limits** | [2407.15504](https://arxiv.org/abs/2407.15504) |  |
+|  Aggressive compression can *increase* cost (output tokens dominate); moderate (r=0.5) saves 27.9% | **Production compression trial** | [2603.23525](https://arxiv.org/abs/2603.23525) |  warning |
 
 ### Candidate implementations
 - [ ] Sentence-importance filter (lexical + embedding score, query-conditioned) over already-retrieved excerpts.
@@ -101,17 +101,17 @@ the same `lh-fix-all` task.)
 
 ## I.3 Prompt caching & cache-prefix continuity
 
-**Status:** 🟡 high value / low effort.
+**Status:**  high value / low effort.
 
 ### Papers
 
 | Idea | Paper | arXiv | Keeps cheap? |
 |---|---|---|---|
-| Cache only stable prefix; exclude dynamic tool results; dynamic content at end; −41–80% cost | **Don't Break the Cache** | [2601.06007](https://arxiv.org/abs/2601.06007) | ✅ |
-| Query-agnostic compression + cache_control + tier-preserving ratio bound; cheapest 16/16 configs | **CAPC** | [2607.15516](https://arxiv.org/abs/2607.15516) | ✅ −49% over cache-only |
-| Ingestion-aware compaction that does NOT invalidate the cache prefix | **TokenPilot** | [2606.17016](https://arxiv.org/abs/2606.17016) | ✅ −61–87% |
-| Verified semantic caching with per-entry thresholds; up to 12.5× hit rate | **vCache** | [2502.03771](https://arxiv.org/abs/2502.03771) | ✅ |
-| KV-cache eviction prioritizing long conversations (P90 TTFT −27%) | **Tail-Optimized LRU** | [2510.15152](https://arxiv.org/abs/2510.15152) | ✅ latency |
+| Cache only stable prefix; exclude dynamic tool results; dynamic content at end; −41–80% cost | **Don't Break the Cache** | [2601.06007](https://arxiv.org/abs/2601.06007) |  |
+| Query-agnostic compression + cache_control + tier-preserving ratio bound; cheapest 16/16 configs | **CAPC** | [2607.15516](https://arxiv.org/abs/2607.15516) |  −49% over cache-only |
+| Ingestion-aware compaction that does NOT invalidate the cache prefix | **TokenPilot** | [2606.17016](https://arxiv.org/abs/2606.17016) |  −61–87% |
+| Verified semantic caching with per-entry thresholds; up to 12.5× hit rate | **vCache** | [2502.03771](https://arxiv.org/abs/2502.03771) |  |
+| KV-cache eviction prioritizing long conversations (P90 TTFT −27%) | **Tail-Optimized LRU** | [2510.15152](https://arxiv.org/abs/2510.15152) |  latency |
 
 ### Candidate implementations
 - [ ] Make compaction cache-contiguous (fold into the stable system prefix) — `sessions.ts` + `prompt-cache.ts`.
@@ -122,17 +122,17 @@ the same `lh-fix-all` task.)
 
 ## I.4 Memory & "don't re-read"
 
-**Status:** 🟢 kills the audit loop; top-tier token win.
+**Status:**  kills the audit loop; top-tier token win.
 
 ### Papers
 
 | Idea | Paper | arXiv | Keeps cheap? |
 |---|---|---|---|
-| Stateful agent = O(1)/turn vs O(n²); −52–90% tokens | **Remember, Don't Re-read** | [2606.14945](https://arxiv.org/abs/2606.14945) | ✅ |
-| 3-level code index + intention-aware output gate + compact evidence packets; −51.5% tokens on SWE-bench | **ContextSniper** | [2607.01916](https://arxiv.org/abs/2607.01916) | ✅ |
-| Hierarchical memory with index-routed retrieval | **H-MEM / Bi-Mem / Pancake** | [2507.22925](https://arxiv.org/abs/2507.22925) [2601.06490](https://arxiv.org/abs/2601.06490) [2602.21477](https://arxiv.org/abs/2602.21477) | ✅ |
-| RL-learned constant-memory / constrained retention / intent-aware graph memory | **MEM1 / OSL-MR / PRISM** | [2506.15841](https://arxiv.org/abs/2506.15841) [2606.10616](https://arxiv.org/abs/2606.10616) [2605.12260](https://arxiv.org/abs/2605.12260) | ✅ |
-| Context information-density maximization + self-evolving SOPs; hierarchical on-demand memory | **GenericAgent** | [2604.17091](https://arxiv.org/abs/2604.17091) | ✅ |
+| Stateful agent = O(1)/turn vs O(n²); −52–90% tokens | **Remember, Don't Re-read** | [2606.14945](https://arxiv.org/abs/2606.14945) |  |
+| 3-level code index + intention-aware output gate + compact evidence packets; −51.5% tokens on SWE-bench | **ContextSniper** | [2607.01916](https://arxiv.org/abs/2607.01916) |  |
+| Hierarchical memory with index-routed retrieval | **H-MEM / Bi-Mem / Pancake** | [2507.22925](https://arxiv.org/abs/2507.22925) [2601.06490](https://arxiv.org/abs/2601.06490) [2602.21477](https://arxiv.org/abs/2602.21477) |  |
+| RL-learned constant-memory / constrained retention / intent-aware graph memory | **MEM1 / OSL-MR / PRISM** | [2506.15841](https://arxiv.org/abs/2506.15841) [2606.10616](https://arxiv.org/abs/2606.10616) [2605.12260](https://arxiv.org/abs/2605.12260) |  |
+| Context information-density maximization + self-evolving SOPs; hierarchical on-demand memory | **GenericAgent** | [2604.17091](https://arxiv.org/abs/2604.17091) |  |
 
 ### Candidate implementations
 - [ ] **Read-cache** — per-session file-hash cache; unchanged files return a "(unchanged)" stub.
@@ -143,18 +143,18 @@ the same `lh-fix-all` task.)
 
 ## I.5 Tool layer
 
-**Status:** 🟡 fixed per-step overhead reduction.
+**Status:**  fixed per-step overhead reduction.
 
 ### Papers
 
 | Idea | Paper | arXiv | Keeps cheap? |
 |---|---|---|---|
-| Compile JSON tool schemas → compact structured text; ≥51% schema-token cut | **TSCG** | [2605.04107](https://arxiv.org/abs/2605.04107) | ✅ |
-| Expose only intent-scoped tool sessions; −99.2% tool context | **Tool Forge** | [2605.28000](https://arxiv.org/abs/2605.28000) | ✅ |
-| Pre-call execute/skip controller; −31–36% cost | **ToolGate** | [2606.03054](https://arxiv.org/abs/2606.03054) | ✅ |
-| Codify delegation contract as pseudocode; −55–87% input / −41–70% output | **CodeAgents** | [2507.03254](https://arxiv.org/abs/2507.03254) | ✅ |
-| Dedicated exploration subagent returning paths+line-ranges; −60% tokens, +5.5% resolution | **FastContext** | [2606.14066](https://arxiv.org/abs/2606.14066) | ✅ |
-| Parallel tool calls + robust abort → token + time savings | **MCP characterization** | [2511.07426](https://arxiv.org/abs/2511.07426) | ✅ |
+| Compile JSON tool schemas → compact structured text; ≥51% schema-token cut | **TSCG** | [2605.04107](https://arxiv.org/abs/2605.04107) |  |
+| Expose only intent-scoped tool sessions; −99.2% tool context | **Tool Forge** | [2605.28000](https://arxiv.org/abs/2605.28000) |  |
+| Pre-call execute/skip controller; −31–36% cost | **ToolGate** | [2606.03054](https://arxiv.org/abs/2606.03054) |  |
+| Codify delegation contract as pseudocode; −55–87% input / −41–70% output | **CodeAgents** | [2507.03254](https://arxiv.org/abs/2507.03254) |  |
+| Dedicated exploration subagent returning paths+line-ranges; −60% tokens, +5.5% resolution | **FastContext** | [2606.14066](https://arxiv.org/abs/2606.14066) |  |
+| Parallel tool calls + robust abort → token + time savings | **MCP characterization** | [2511.07426](https://arxiv.org/abs/2511.07426) |  |
 
 ### Candidate implementations
 - [ ] Compact tool schemas (TSCG-style) in `request-budget.ts`.
@@ -165,17 +165,17 @@ the same `lh-fix-all` task.)
 
 ## I.6 Retrieval quality
 
-**Status:** 🟡 tuning wins, free.
+**Status:**  tuning wins, free.
 
 ### Papers
 
 | Idea | Paper | arXiv | Keeps cheap? |
 |---|---|---|---|
-| Adaptive graph traversal per question type | **PolyG** | [2504.02112](https://arxiv.org/abs/2504.02112) | ✅ |
-| LLM control wins only when evidence is scattered (6–10 chunks); heuristic otherwise; final ranking → vector rerank | **RLM-on-KG** | [2604.17056](https://arxiv.org/abs/2604.17056) | ✅ |
-| Small-model extraction + cross-chunk graph augmentation | **RAGU / CrossAug** | [2607.11683](https://arxiv.org/abs/2607.11683) [2605.28004](https://arxiv.org/abs/2605.28004) | ✅ |
-| Query rewriting trained on reranker feedback (annotation-free) | **RaFe** | [2405.14431](https://arxiv.org/abs/2405.14431) | ✅ |
-| Lost-in-the-middle family — keep context short, relevant items at edges | **Lost in the Middle** et al. | [2307.03172](https://arxiv.org/abs/2307.03172) [2406.16008](https://arxiv.org/abs/2406.16008) [2412.10079](https://arxiv.org/abs/2412.10079) [2510.10276](https://arxiv.org/abs/2510.10276) | ✅ |
+| Adaptive graph traversal per question type | **PolyG** | [2504.02112](https://arxiv.org/abs/2504.02112) |  |
+| LLM control wins only when evidence is scattered (6–10 chunks); heuristic otherwise; final ranking → vector rerank | **RLM-on-KG** | [2604.17056](https://arxiv.org/abs/2604.17056) |  |
+| Small-model extraction + cross-chunk graph augmentation | **RAGU / CrossAug** | [2607.11683](https://arxiv.org/abs/2607.11683) [2605.28004](https://arxiv.org/abs/2605.28004) |  |
+| Query rewriting trained on reranker feedback (annotation-free) | **RaFe** | [2405.14431](https://arxiv.org/abs/2405.14431) |  |
+| Lost-in-the-middle family — keep context short, relevant items at edges | **Lost in the Middle** et al. | [2307.03172](https://arxiv.org/abs/2307.03172) [2406.16008](https://arxiv.org/abs/2406.16008) [2412.10079](https://arxiv.org/abs/2412.10079) [2510.10276](https://arxiv.org/abs/2510.10276) |  |
 
 ### Candidate implementations
 - [ ] Graph-scatter-aware retrieval budget (widen expansion when matches are scattered; stay lexical when concentrated).
@@ -186,16 +186,16 @@ the same `lh-fix-all` task.)
 
 ## I.7 Speed & latency
 
-**Status:** 🟡 mostly informs routing/architecture.
+**Status:**  mostly informs routing/architecture.
 
 ### Papers
 
 | Idea | Paper | arXiv | Keeps cheap? |
 |---|---|---|---|
-| Draft-verify decoding (1.7–2.1×) | **Kangaroo / BiLD / MoA-SD** | [2404.18911](https://arxiv.org/abs/2404.18911) [2302.07863](https://arxiv.org/abs/2302.07863) [2410.03804](https://arxiv.org/abs/2410.03804) | ⚠️ provider-side |
-| Local small-model triage routing + prompt compression before cloud LLM; 45–79% savings | **Local-Splitter** | [2604.12301](https://arxiv.org/abs/2604.12301) | ✅ |
-| Adaptive compute + memory → up to −56% compute with past experience | **SpeedupLLM** | [2505.20643](https://arxiv.org/abs/2505.20643) | ✅ |
-| Edge SLM ↔ cloud LLM collaboration taxonomy (task assignment / speculative / routing) | **Edge-Cloud survey** | [2507.16731](https://arxiv.org/abs/2507.16731) | ✅ informs design |
+| Draft-verify decoding (1.7–2.1×) | **Kangaroo / BiLD / MoA-SD** | [2404.18911](https://arxiv.org/abs/2404.18911) [2302.07863](https://arxiv.org/abs/2302.07863) [2410.03804](https://arxiv.org/abs/2410.03804) |  provider-side |
+| Local small-model triage routing + prompt compression before cloud LLM; 45–79% savings | **Local-Splitter** | [2604.12301](https://arxiv.org/abs/2604.12301) |  |
+| Adaptive compute + memory → up to −56% compute with past experience | **SpeedupLLM** | [2505.20643](https://arxiv.org/abs/2505.20643) |  |
+| Edge SLM  cloud LLM collaboration taxonomy (task assignment / speculative / routing) | **Edge-Cloud survey** | [2507.16731](https://arxiv.org/abs/2507.16731) |  informs design |
 
 ### Candidate implementations
 - [ ] Local triage layer for cheap routing (offline embedder already exists — reuse for classification).
@@ -205,19 +205,19 @@ the same `lh-fix-all` task.)
 
 ## I.8 Teaching/learning
 
-**Status:** 🟢 differentiator; prompt-level improvements available today.
+**Status:**  differentiator; prompt-level improvements available today.
 
 ### Papers
 
 | Idea | Paper | arXiv | Keeps cheap? |
 |---|---|---|---|
-| Keyword-leakage metric + RL to stop tutors revealing answers (SE 30→63%, leakage 30→13%) | **HeuristicEdu** | [2607.22996](https://arxiv.org/abs/2607.22996) | ✅ adopt metric only |
-| Pedagogically-aligned RL for Socratic tutors | **PEARL** | [2605.29582](https://arxiv.org/abs/2605.29582) | ⚠️ training |
-| Socratic question gen via DPO; small model beats prompting | **Socratic DPO** | [2403.00199](https://arxiv.org/abs/2403.00199) | ⚠️ training |
-| Socratic chatbot promotes critical thinking vs direct-answer | **Critical-thinking chatbot** | [2409.05511](https://arxiv.org/abs/2409.05511) | ✅ validates |
-| Socratic vs Narrative: Socratic drives engagement; experts prefer Narrative | **TeaPT** | [2509.12107](https://arxiv.org/abs/2509.12107) | ✅ adaptive mode |
-| Persist verified fixes as reusable knowledge; +9.4pp SWE-bench | **MemCoder** | [2603.13258](https://arxiv.org/abs/2603.13258) | ✅ |
-| Socratic Playground for Learning (multi-turn tutoring) | **SPL** | [2406.13919](https://arxiv.org/abs/2406.13919) | ✅ validates |
+| Keyword-leakage metric + RL to stop tutors revealing answers (SE 30→63%, leakage 30→13%) | **HeuristicEdu** | [2607.22996](https://arxiv.org/abs/2607.22996) |  adopt metric only |
+| Pedagogically-aligned RL for Socratic tutors | **PEARL** | [2605.29582](https://arxiv.org/abs/2605.29582) |  training |
+| Socratic question gen via DPO; small model beats prompting | **Socratic DPO** | [2403.00199](https://arxiv.org/abs/2403.00199) |  training |
+| Socratic chatbot promotes critical thinking vs direct-answer | **Critical-thinking chatbot** | [2409.05511](https://arxiv.org/abs/2409.05511) |  validates |
+| Socratic vs Narrative: Socratic drives engagement; experts prefer Narrative | **TeaPT** | [2509.12107](https://arxiv.org/abs/2509.12107) |  adaptive mode |
+| Persist verified fixes as reusable knowledge; +9.4pp SWE-bench | **MemCoder** | [2603.13258](https://arxiv.org/abs/2603.13258) |  |
+| Socratic Playground for Learning (multi-turn tutoring) | **SPL** | [2406.13919](https://arxiv.org/abs/2406.13919) |  validates |
 
 ### Candidate implementations
 - [ ] Add a "did the tutor reveal the answer" leakage scorer to `learn` mode / `question` tool.
@@ -264,22 +264,22 @@ read/grep discipline (which is exactly what causes NIMBL's audit-loop failures).
 
 | Harness | Lang/Runtime | License | ~Stars | Agent loop | Context mgmt | Retrieval/RAG | Subagents | Token-efficiency | Step budget |
 |---|---|---|---|---|---|---|---|---|---|
-| **NIMBL** | TS / Bun | MIT | — | ReAct-style | structural+lexical+graph+hybrid, budgeted | ✅ strongest here | delegate tool (discouraged) | ★★★★★ core thesis | **8 steps (the bug)** |
-| **opencode** | TS / Bun | MIT | 198k | streamText + per-agent steps | SQLite sessions, auto-compaction + prune | ❌ none | task/explore, own budgets | ★★★★ prompt-cache, truncate, prune | per-agent `steps` + graceful MAX_STEPS prompt |
+| **NIMBL** | TS / Bun | MIT | — | ReAct-style | structural+lexical+graph+hybrid, budgeted |  strongest here | delegate tool (discouraged) | ★★★★★ core thesis | **8 steps (the bug)** |
+| **opencode** | TS / Bun | MIT | 198k | streamText + per-agent steps | SQLite sessions, auto-compaction + prune |  none | task/explore, own budgets | ★★★★ prompt-cache, truncate, prune | per-agent `steps` + graceful MAX_STEPS prompt |
 | **Aider** | Python | Apache-2.0 | 48k | non-agent edit loop + reflection (3) | file list + repo map (PageRank) | repo-map tags | architect→editor | ★★★★ repo map, diff formats, cache keepalive | none (interactive) |
-| **Claude Code** | Node→native | Proprietary | 142k | model-driven, unbounded | CLAUDE.md, lazy file load, auto-compact | ❌ (LSP plugin) | task tool, teams | ★★★★★ layered prefix cache | none (interruptible) |
-| **Codex CLI** | Rust | Apache-2.0 | 106k | Responses API loop | ContextualUserFragment, 10K caps | ❌ | codex_delegate (1k summaries) | ★★★★ diff edits, no-history-rewrite | collaboration modes |
-| **Gemini CLI** | TS | Apache-2.0 | 107k | function-call loop | 1M window, GEMINI.md, memory files | ❌ | subagents + remote | ★★★ implicit cache only | none |
-| **MiMo-Code** | TS / Bun | MIT | 12.7k | build/plan/compose | SQLite FTS5 memory, checkpoints, budgeted inject | ❌ | parallel shared-context, worktrees | ★★★★ budgeted memory, BM25 skills | /goal + judge, no hard cap |
-| **Kimi Code** | TS / Node | MIT | 6.7k | agent-core-v2 loop | state.json + wire.jsonl, reserved-ctx compaction | ❌ | Agent/AgentSwarm (128), cheap pool | ★★★★ Edit tool, attempts≠steps | unlimited steps, 10 attempts/step |
+| **Claude Code** | Node→native | Proprietary | 142k | model-driven, unbounded | CLAUDE.md, lazy file load, auto-compact |  (LSP plugin) | task tool, teams | ★★★★★ layered prefix cache | none (interruptible) |
+| **Codex CLI** | Rust | Apache-2.0 | 106k | Responses API loop | ContextualUserFragment, 10K caps |  | codex_delegate (1k summaries) | ★★★★ diff edits, no-history-rewrite | collaboration modes |
+| **Gemini CLI** | TS | Apache-2.0 | 107k | function-call loop | 1M window, GEMINI.md, memory files |  | subagents + remote | ★★★ implicit cache only | none |
+| **MiMo-Code** | TS / Bun | MIT | 12.7k | build/plan/compose | SQLite FTS5 memory, checkpoints, budgeted inject |  | parallel shared-context, worktrees | ★★★★ budgeted memory, BM25 skills | /goal + judge, no hard cap |
+| **Kimi Code** | TS / Node | MIT | 6.7k | agent-core-v2 loop | state.json + wire.jsonl, reserved-ctx compaction |  | Agent/AgentSwarm (128), cheap pool | ★★★★ Edit tool, attempts≠steps | unlimited steps, 10 attempts/step |
 | **Hermes Agent** | Python | MIT | 231k | AIAgent 500 iters | dual compressor (50%/85%), iterative summaries | FTS5 session search | delegate (50 iters) | ★★★★★ tool-prune + caching + summaries | 500 parent / 50 subagent |
-| **Pi** | TS / Bun | MIT | 91k | minimal loop | CompactionEntry + branch summaries | ❌ | ❌ (extensions) | ★★★★ structured compaction | none (minimal core) |
-| **oh-my-pi** | TS + Rust | MIT | 25k | 31 tools, 10 roles | retain/recall/reflect memory | ❌ | task→worktrees, advisor | ★★★★★ hashline edits, ast_grep | schema-validated task fan-out |
-| **OpenHands** | Python | MIT | 84k | event-sourced loop + Condenser | RollingCondenser head/tail/summarize | ❌ | ❌ | ★★★ condenser, security_risk self-label | none (condenser + stuck detector) |
-| **SWE-agent** | Python | MIT | 20k | bounded steps + requery(3) | HistoryProcessors elision | ❌ | ❌ | ★★★★ ACI discipline (100-line viewer, filename grep) | `max_requeries=3` |
-| **Cline** | TS/Node | Apache-2.0 | 66k | run/continue + auto-compact | Memory Bank md, checkpoints, ripgrep | ❌ | read-only research subagents | ★★★ | none (compaction-driven) |
-| **Goose** | Rust | Apache-2.0 | 53k | interactive loop + context revision | summarize-with-small-model, .goosehints | ❌ (explicitly "includes everything") | delegate/load, recipes | ★★★ | subagent 25 turns/5min |
-| **Continue** | TS | Apache-2.0 | 36k | tool handshake + system-message tools | repo map, rules | DIY guide only | ❌ | ★★★ system-message tools, model roles | none (unmaintained) |
+| **Pi** | TS / Bun | MIT | 91k | minimal loop | CompactionEntry + branch summaries |  |  (extensions) | ★★★★ structured compaction | none (minimal core) |
+| **oh-my-pi** | TS + Rust | MIT | 25k | 31 tools, 10 roles | retain/recall/reflect memory |  | task→worktrees, advisor | ★★★★★ hashline edits, ast_grep | schema-validated task fan-out |
+| **OpenHands** | Python | MIT | 84k | event-sourced loop + Condenser | RollingCondenser head/tail/summarize |  |  | ★★★ condenser, security_risk self-label | none (condenser + stuck detector) |
+| **SWE-agent** | Python | MIT | 20k | bounded steps + requery(3) | HistoryProcessors elision |  |  | ★★★★ ACI discipline (100-line viewer, filename grep) | `max_requeries=3` |
+| **Cline** | TS/Node | Apache-2.0 | 66k | run/continue + auto-compact | Memory Bank md, checkpoints, ripgrep |  | read-only research subagents | ★★★ | none (compaction-driven) |
+| **Goose** | Rust | Apache-2.0 | 53k | interactive loop + context revision | summarize-with-small-model, .goosehints |  (explicitly "includes everything") | delegate/load, recipes | ★★★ | subagent 25 turns/5min |
+| **Continue** | TS | Apache-2.0 | 36k | tool handshake + system-message tools | repo map, rules | DIY guide only |  | ★★★ system-message tools, model roles | none (unmaintained) |
 
 ---
 

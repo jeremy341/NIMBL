@@ -160,7 +160,7 @@ bg `#0a0a0a`, panel `#141414`, element `#1e1e1e`, border `#484848`, borderActive
 
 ## 5. Typography, Glyphs & Icons
 
-- `△` (permission/question), `▣` (assistant/turn summary), `┃`/`╹`/`▀`/`█` (borders & logo half-blocks), `●` (current/session/workspace/LSP dots), `•` (status bullets), `✓`/`✗`/`○`/`◌`/`◉`/`⊙`/`⟳`/`↳`/`→`/`←`/`↔`/`⇆`/`↑↓`/`▼`/`▶`/`▌`/`│`, `⚙`/`✱`/`%`/`◈`/`$`/`#`, `~` (pending tools), `…`/`⋯`, `⬥ ◆ ⬩ ⬪ · ■ ⬝` (Knight-Rider), `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` (braille spinner), `▄ ▀` (logo shadows), `⬖` (getting-started), `✕` (dismiss), `+`/`-` (diff signs), `∷`/`├ ┤ ┬ ┴` (panel separators), `[x]`/`[ ]` (checkboxes), `[✓]`/`[•]`/`[ ]` (todos), `·` (separators)
+- `△` (permission/question), `▣` (assistant/turn summary), `┃`/`╹`/`▀`/`█` (borders & logo half-blocks), `●` (current/session/workspace/LSP dots), `•` (status bullets), `✓`/`✗`/`○`/`◌`/`◉`/`⊙`/`⟳`/`↳`/`→`/`←`/``/`⇆`/`↑↓`/`▼`/``/`▌`/`│`, ``/`✱`/`%`/`◈`/`$`/`#`, `~` (pending tools), `…`/`⋯`, `⬥ ◆ ⬩ ⬪ · ■ ⬝` (Knight-Rider), `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` (braille spinner), `▄ ▀` (logo shadows), `⬖` (getting-started), `✕` (dismiss), `+`/`-` (diff signs), `∷`/`├ ┤ ┬ ┴` (panel separators), `[x]`/`[ ]` (checkboxes), `[✓]`/`[•]`/`[ ]` (todos), `·` (separators)
 - **Bold** via `TextAttributes.BOLD`; **italic** via syntax styles; **strikethrough** via `TextAttributes.STRIKETHROUGH`
 - **CLI wordmark** (4 rows, block glyphs `█▀▀█ █▀▀█ …`), dim fg 90, shadow fg 235; non-TTY renders plain
 - **Bold/underline** combos: H1 headings bold+underline; strong/emph/italic map in syntax
