@@ -12,7 +12,7 @@ import type { PermissionSettings } from "./settings"
 import { permissionExplanation, permissionFor } from "./permissions"
 import { ASSISTANT_RESPONSE_STYLE, stripEmojis } from "./response-style"
 import { resolvePathAllowExternal, resolveProjectPath, resolveUnprotectedProjectPath, type ResolvedToolPath } from "./project-path"
-import { runShellCommand } from "./shell"
+import { isTestCommand, runShellCommand, summarizeTestOutput } from "./shell"
 import { applyEdit } from "./edit-apply"
 import { fitRequestToBudget, type RequestBudgetBreakdown } from "./request-budget"
 import { countTextTokens } from "./tokenizers"
@@ -328,6 +328,10 @@ export function pruneOldToolResults(messages: readonly unknown[], tail = 6, minC
   return changed ? next : (messages as unknown[])
 }
 
+export function readCacheKey(path: string, startLine?: number, endLine?: number) {
+  return `${path}\0${startLine || 1}\0${endLine || ""}`
+}
+
 /**
  * Graceful context-overflow fallback (A.1 / BRAINSTORM §12 #1): when a long
  * tool loop's accumulated history would exceed the model window, drop the
@@ -444,6 +448,14 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   let pendingEdits = 0
   const readGateBudget = options.readBudget ?? 8
   const enforceReadGate = options.mode === "build"
+  const readCache = new Map<string, { signature: string; output: string }>()
+  const testRunCache = new Map<string, { code: number; output: string }>()
+  const invalidateFileCaches = (paths: readonly string[]) => {
+    for (const path of paths) {
+      for (const key of readCache.keys()) if (key.startsWith(`${path}\0`)) readCache.delete(key)
+    }
+    testRunCache.clear()
+  }
   const gateDirective = () => {
     const verifyNote = pendingEdits > 0 ? ` You have ${pendingEdits} unverified edit(s) since the last command run; run the relevant test (bash) to verify them before continuing to read.` : ""
     return `Investigation budget reached: ${readsSinceEdit} read-only tool calls since the last edit with no file change. Make the focused edit now and verify it, or stop investigating and answer directly. Do not issue further reads without acting.${verifyNote}`
@@ -510,11 +522,21 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           await approveExternal(target, event)
           await approve("read", "Read " + target.rel, "Read this file.", undefined, target.rel, event)
           readsSinceEdit++
-          const size = statSync(target.full).size
+          const key = readCacheKey(target.full, startLine, endLine)
+          const stat = statSync(target.full)
+          const signature = `${stat.size}:${stat.mtimeMs}`
+          const cached = readCache.get(key)
+          if (cached?.signature === signature) {
+            const output = `[Unchanged since previous read; use the earlier output for ${target.rel}]`
+            emitTool({ id: event, tool: "read", state: "completed", title: "Read unchanged " + target.rel, path: target.rel, output })
+            return output
+          }
+          const size = stat.size
           if (size > MAX_FILE_BYTES * 8) return `Error: File is ${size} bytes, exceeding the read limit. Use bash to inspect it in parts.`
           const lines = readFileSync(target.full, "utf8").split("\n")
           const text = lines.slice((startLine || 1) - 1, endLine || lines.length).map((line, index) => String((startLine || 1) + index).padStart(5) + "  " + line).join("\n")
           const output = clip(text)
+          readCache.set(key, { signature, output })
           emitTool({ id: event, tool: "read", state: "completed", title: "Read " + target.rel, path: target.rel, output })
           return output
         } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "read", state: "failed", title: "Read " + path, detail: message }); return "Error: " + message }
@@ -592,6 +614,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           mkdirSync(dirname(target.full), { recursive: true })
           writeFileSync(target.full, content, "utf8")
           readsSinceEdit = 0; pendingEdits++
+          invalidateFileCaches([target.full])
           options.onFileChange?.({ path: target.rel, before, after: content, beforeExists, afterExists: true })
           emitTool({ id: event, tool: "write", state: "completed", title: "Wrote " + target.rel, path: target.rel, diff })
           return "Wrote " + target.rel
@@ -615,6 +638,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           await approve("edit", "Edit " + target.rel, "Apply this text replacement.", diff, target.rel, event)
           writeFileSync(target.full, after, "utf8")
           readsSinceEdit = 0; pendingEdits++
+          invalidateFileCaches([target.full])
           options.onFileChange?.({ path: target.rel, before, after, beforeExists: true, afterExists: true })
           emitTool({ id: event, tool: "edit", state: "completed", title: "Edited " + target.rel, path: target.rel, diff })
           return "Edited " + target.rel
@@ -644,6 +668,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           })
           if (options.onFileChanges) options.onFileChanges(changes)
           else for (const change of changes) options.onFileChange?.(change)
+          invalidateFileCaches(paths.map((path) => resolveUnprotectedProjectPath(options.root, path).full))
           readsSinceEdit = 0; pendingEdits++
           emitTool({ id: event, tool: "apply_patch", state: "completed", title: "Applied patch", detail: paths.join(", "), diff: clip(patch, 12_000) })
           return "Applied patch to " + paths.join(", ")
@@ -657,11 +682,20 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         const event = toolID(); emitTool({ id: event, tool: "bash", state: "running", title: "Run command", detail: command })
         try {
           await approve("bash", "Run command", command, undefined, command, event)
-          const result = await runShellCommand(command, options.root, { signal: options.abortSignal })
+          let result = testRunCache.get(command)
+          const cached = Boolean(result)
+          if (!result) {
+            result = await runShellCommand(command, options.root, { signal: options.abortSignal })
+            if (isTestCommand(command)) {
+              result = { ...result, output: summarizeTestOutput(command, result.output, result.code) }
+              testRunCache.set(command, result)
+            }
+          }
           readsSinceEdit = 0; pendingEdits = 0
           const state = result.code === 0 ? "completed" : "failed"
-          emitTool({ id: event, tool: "bash", state, title: "Command exited " + result.code, detail: command, output: result.output })
-          return "Exit code " + result.code + "\n" + result.output
+          const output = cached ? `[Cached test result; no files changed since the previous run]\n${result.output}` : result.output
+          emitTool({ id: event, tool: "bash", state, title: (cached ? "Cached test result " : "Command exited ") + result.code, detail: command, output })
+          return "Exit code " + result.code + "\n" + output
         } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "bash", state: "rejected", title: "Run command", detail: message }); return "Error: " + message }
       },
     }),
@@ -864,6 +898,10 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           // B.2 Conditional tool-result pruning: long-horizon runs accumulate many
           // tool messages; once the step history grows, stub old completed outputs
           // (tail-protected, diffs/errors kept) so they stop re-entering context.
+          // Pruned per step: rewriting the stub keeps history bounded, which the
+          // TIER-E one-shot variant broke (it let lh-fix-all history grow to
+          // ~6k tokens/step vs 2.4k, tripling total tokens despite better cache
+          // reads — "Token Reduction Is Not Cost Reduction", arXiv 2607.12161).
           if (messages.length > 24) {
             const pruned = pruneOldToolResults(messages)
             if (pruned !== messages) return { messages: pruned as any }

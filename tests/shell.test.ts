@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { runShellCommand } from "@/core/shell"
+import { isTestCommand, runShellCommand, summarizeTestOutput } from "@/core/shell"
 
 describe("shell execution", () => {
   it("stops commands that exceed their timeout", async () => {
@@ -17,5 +17,29 @@ describe("shell execution", () => {
     const result = await runShellCommand(command, root, { maxOutputChars: 80 })
     expect(result.output.length).toBeLessThan(160)
     expect(result.output).toContain("truncated")
+  })
+
+  it("condenses test output to a verdict and actionable failures", () => {
+    expect(isTestCommand("bun test ./tests-hidden")).toBe(true)
+    expect(isTestCommand("bun run build")).toBe(false)
+    const output = summarizeTestOutput("bun test ./tests-hidden", "bun test v1.3.14\n\ntests-hidden\\billing.test.ts:\n2 | import { charge } from \"../src\"\n7 |   expect(stored.key).toBe(\"k1\")\n                                    ^\nerror: expect(received).toBe(expected)\nExpected: \"k1\"\nReceived: undefined\n      at <anonymous> (tests-hidden\\billing.test.ts:7:33)\n(fail) charge persists the idempotency key [0.73ms]\n(pass) other test [0.09ms]\n 10 pass\n 1 fail\nRan 25 tests across 11 files. [118.00ms]\n" + "noise\n".repeat(50), 1)
+    expect(output).toContain("Test command exited 1.")
+    expect(output).toContain("FAIL tests-hidden\\billing.test.ts")
+    expect(output).toContain("charge persists the idempotency key")
+    expect(output).toContain("expect(received).toBe(expected)")
+    expect(output).toContain("Expected: \"k1\"")
+    expect(output).toContain("Received: undefined")
+    expect(output).toContain("10 pass, 1 fail")
+    expect(output).toContain("Ran 25 tests across 11 files.")
+    expect(output).not.toContain("2 | import")
+    expect(output).not.toContain("noise")
+    expect(output.length).toBeLessThan(700)
+  })
+
+  it("keeps passing runs compact", () => {
+    const output = summarizeTestOutput("bun test ./tests/unit", "bun test v1.3.14\n\ntests/unit/support.test.ts:\n(pass) a [0.09ms]\n(pass) b [0.03ms]\n 5 pass\n 0 fail\nRan 5 tests across 1 file. [35.00ms]", 0)
+    expect(output).toContain("Test command exited 0.")
+    expect(output).toContain("5 pass, 0 fail")
+    expect(output).not.toContain("(pass) a")
   })
 })

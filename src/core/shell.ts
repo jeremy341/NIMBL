@@ -60,6 +60,90 @@ export interface ShellOptions {
   maxOutputChars?: number
 }
 
+export function isTestCommand(command: string): boolean {
+  return /(^|\s)(bun\s+test|vitest(?:\s|$)|npm\s+(?:run\s+)?test|pnpm\s+(?:run\s+)?test|yarn\s+test)(\s|$)/i.test(command)
+}
+
+/**
+ * Keep test feedback actionable without replaying the full runner log.
+ *
+ * TIER-E regression fix: the earlier version kept only lines matching
+ * pass/fail/error keywords, which dropped the failing FILE PATH and the
+ * Expected/Received assertion values. Starved of "which file failed", the
+ * model re-ran the full suite ~2x (55 -> 132 test runs on lh-fix-all), doubling
+ * steps and tokens. This version parses the bun/vitest output into per-file
+ * failure blocks that preserve exactly the attribution the model needs:
+ *   - the failing file path (tests-hidden\foo.test.ts)
+ *   - the failing test name ((fail) ...)
+ *   - the error type (error: expect(received).toBe(expected))
+ *   - Expected / Received values
+ * plus the pass/fail totals. Code-context lines, stack traces, and runner
+ * noise are dropped (still capped, still tiny on passing runs).
+ */
+export function summarizeTestOutput(command: string, output: string, code: number): string {
+  if (!isTestCommand(command)) return output
+  const lines = output.split(/\r?\n/).map((line) => line.trimEnd())
+  const failures: string[] = []
+  let currentFile = ""
+  let passTotal = 0
+  let failTotal = 0
+  let ranLine = ""
+  let pendingError = ""
+  let pendingExpected = ""
+  let pendingReceived = ""
+
+  const pushFailure = (name: string) => {
+    const block = [`FAIL ${currentFile || "(unknown file)"}`, `  ${name}`]
+    if (pendingError) block.push(`  ${pendingError}`)
+    if (pendingExpected) block.push(`  ${pendingExpected}`)
+    if (pendingReceived) block.push(`  ${pendingReceived}`)
+    failures.push(block.join("\n"))
+    pendingError = ""; pendingExpected = ""; pendingReceived = ""
+  }
+
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (!line) continue
+    // File header: tests-hidden\billing-idempotency.test.ts:
+    const fileMatch = line.match(/^(.+\.(?:test|spec)\.(?:ts|tsx|js|jsx|mjs|mts|cts)):\s*$/i)
+    if (fileMatch) { currentFile = fileMatch[1]!; continue }
+    // Summary totals: " 10 pass" / " 15 fail"
+    let m = line.match(/^(\d+)\s+pass$/i)
+    if (m) { passTotal = Number(m[1]); continue }
+    m = line.match(/^(\d+)\s+fail$/i)
+    if (m) { failTotal = Number(m[1]); continue }
+    m = line.match(/^Ran (\d+) tests? across (\d+) files?\./i)
+    if (m) { ranLine = `Ran ${m[1]} tests across ${m[2]} files.`; continue }
+    // (fail) test name [0.73ms]
+    m = line.match(/^\(fail\)\s+(.+?)(?:\s+\[\d+(?:\.\d+)?ms\])?\s*$/i)
+    if (m) { failTotal++; pushFailure(m[1]!); continue }
+    // (pass) test name [0.09ms]
+    m = line.match(/^\(pass\)\s+/i)
+    if (m) { passTotal++; continue }
+    // error: expect(received).toBe(expected)  (buffer until next (fail))
+    m = line.match(/^error:\s*(.+)$/i)
+    if (m) { pendingError = m[1]!.slice(0, 120); continue }
+    // Expected: "k1" / Received: undefined
+    m = line.match(/^(Expected|Received):\s*(.+)$/i)
+    if (m) {
+      const value = m[2]!.slice(0, 80)
+      if (m[1]!.toLowerCase() === "expected") pendingExpected = `Expected: ${value}`
+      else pendingReceived = `Received: ${value}`
+      continue
+    }
+    // Ignore everything else (code context, ^ pointers, stack traces, runner noise).
+  }
+
+  const maxFailures = 10
+  const shown = failures.slice(0, maxFailures)
+  const more = failures.length - shown.length
+  const result = [`Test command exited ${code}.`]
+  if (shown.length) result.push(...shown)
+  if (more > 0) result.push(`... and ${more} more failing tests`)
+  result.push(`${passTotal} pass, ${failTotal} fail` + (ranLine ? ` - ${ranLine}` : ""))
+  return result.join("\n")
+}
+
 export async function runShellCommand(command: string, cwd: string, options: ShellOptions = {}) {
   const limit = options.maxOutputChars ?? DEFAULT_OUTPUT_CHARS
   const child = Bun.spawn(

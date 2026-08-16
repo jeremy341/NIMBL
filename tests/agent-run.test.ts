@@ -13,7 +13,7 @@ vi.mock("ai", () => ({
 vi.mock("@ai-sdk/openai", () => ({ createOpenAI: () => Object.assign(() => ({}), { chat: () => ({}), responses: () => ({}) }) }))
 vi.mock("@ai-sdk/anthropic", () => ({ createAnthropic: () => () => ({}) }))
 
-import { runAgent, countReadsSinceEdit, pruneOldToolResults, trimMessagesToWindow } from "@/core/agent"
+import { runAgent, countReadsSinceEdit, pruneOldToolResults, readCacheKey, trimMessagesToWindow } from "@/core/agent"
 
 describe("agent execution", () => {
   beforeEach(() => {
@@ -636,7 +636,8 @@ describe("agent execution", () => {
     // Reads 1-10 pass (10 successful reads); reads 11-14 are blocked with the
     // directive instead of returning content.
     expect(readOutput.match(/Investigation budget reached/g)).toHaveLength(4)
-    expect(readOutput.match(/content2/g)).toHaveLength(5)
+    expect(readOutput.match(/content2/g)).toHaveLength(1)
+    expect(readOutput.match(/Unchanged since previous read/g)).toHaveLength(8)
   })
 
   it("does not hard-block reads outside Build mode", async () => {
@@ -795,6 +796,11 @@ describe("agent execution", () => {
       { role: "tool", content: [{ type: "tool-result", toolCallId: "c1", toolName: "read", output: "short" }] },
     ]
     expect(pruneOldToolResults(messages, 6, 200)).toBe(messages)
+  })
+
+  it("builds distinct read-cache keys for line ranges", () => {
+    expect(readCacheKey("/tmp/a.ts")).not.toBe(readCacheKey("/tmp/a.ts", 2))
+    expect(readCacheKey("/tmp/a.ts", 2, 4)).toBe(readCacheKey("/tmp/a.ts", 2, 4))
   })
 
   describe("A.1 graceful context overflow (trimMessagesToWindow)", () => {
