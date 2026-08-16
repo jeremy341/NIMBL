@@ -14,19 +14,23 @@ const taskIds = (process.env.NIMBL_BENCH_TASKS || "").split(",").map((id) => id.
 // custom provider, the suffix is the API model id. Pass the full prefixed form.
 const baseURL = process.env.OPENCODE_BENCH_BASE_URL
 const apiKey = process.env.OPENCODE_BENCH_API_KEY
-const providerId = process.env.OPENCODE_BENCH_PROVIDER
-const model = process.env.OPENCODE_BENCH_MODEL || process.env.NIMBL_MODEL || "deepseek/deepseek-chat"
-const customProvider = baseURL && apiKey && providerId ? { providerId, baseURL, apiKey } : undefined
+// The injected provider ID must not collide with a provider already defined in
+// the global opencode config (e.g. `openrouter` has a whitelist that would
+// filter out our model). Use a unique ID.
+const providerId = process.env.OPENCODE_BENCH_PROVIDER_ID || "nimbl-bench"
+const apiModel = (process.env.OPENCODE_BENCH_MODEL || process.env.NIMBL_MODEL || "deepseek/deepseek-chat").replace(/^[^/]+\//, "")
+const model = `${providerId}/${apiModel}`
+const customProvider = baseURL && apiKey ? { providerId, baseURL, apiKey } : undefined
 
 if (!existsSync(resultsDir)) mkdirSync(resultsDir, { recursive: true })
 
 const runTag = `${Date.now()}`
-const meta = benchmarkMetadata({ seed, provider: process.env.OPENCODE_BENCH_PROVIDER || "opencode", model })
+const meta = benchmarkMetadata({ seed, provider: process.env.OPENCODE_BENCH_PROVIDER || "opencode", model: apiModel })
 const rawRoot = join(resultsDir, `raw-opencode-${runTag}`)
 mkdirSync(rawRoot, { recursive: true })
 
 console.log(`corpusRoot: ${corpusRoot}`)
-console.log(`model: ${model} (provider prefix required: ${customProvider ? "yes" : "no"})`)
+console.log(`model: ${apiModel} (injected provider ${providerId}${customProvider ? "" : " NOT SET"})`)
 console.log(`concurrency: ${concurrency}`)
 
 const runs = await runOpencodeBenchmark({

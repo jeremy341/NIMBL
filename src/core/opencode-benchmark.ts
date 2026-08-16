@@ -20,6 +20,45 @@ interface OpenCodeEvent {
   error?: { name?: string; data?: { message?: string } }
 }
 
+export interface OpencodeCustomProvider {
+  providerId: string
+  baseURL: string
+  apiKey: string
+  npm?: string
+}
+
+/**
+ * Builds the `opencode.json` provider config injected into each benchmark
+ * workspace so `opencode run --model <provider>/<model>` targets an arbitrary
+ * OpenAI-compatible endpoint.
+ *
+ * opencode resolves `--model provider/model` by splitting at the FIRST slash
+ * (model IDs may contain further slashes — e.g. OpenRouter routes like
+ * `deepseek/deepseek-v4-flash-0731:StreamLake`). The injected provider catalog
+ * must therefore key the model by everything after the first slash, not the
+ * last segment, or the run fails with a ProviderModelNotFoundError.
+ */
+export function opencodeCustomProviderConfig(options: OpencodeCustomProvider & { model: string; contextWindow?: number }): Record<string, unknown> {
+  const { providerId, baseURL, apiKey, model, npm, contextWindow } = options
+  const modelID = model.includes("/") ? model.slice(model.indexOf("/") + 1) : model
+  return {
+    provider: {
+      [providerId]: {
+        npm: npm ?? "@ai-sdk/openai-compatible",
+        name: providerId,
+        options: { baseURL, apiKey },
+        models: {
+          [modelID]: {
+            name: modelID,
+            tool_call: true,
+            limit: { context: contextWindow ?? 200_000, output: 8_192 },
+          },
+        },
+      },
+    },
+  }
+}
+
 /**
  * Runs opencode (`opencode run --format json --auto`) on the frozen agent task
  * corpus and returns NIMBL-shaped AgentBenchmarkRun records so the two harnesses
@@ -77,23 +116,7 @@ export async function runOpencodeBenchmark(options: {
       // Inject a custom provider config so `opencode run --model <id>/<model>`
       // points at an arbitrary OpenAI-compatible endpoint.
       if (options.customProvider) {
-        const cfg = {
-          provider: {
-            [options.customProvider.providerId]: {
-              npm: options.customProvider.npm ?? "@ai-sdk/openai-compatible",
-              name: options.customProvider.providerId,
-              options: { baseURL: options.customProvider.baseURL, apiKey: options.customProvider.apiKey },
-              models: {
-                [model.split("/").at(-1) ?? model]: {
-                  name: model.split("/").at(-1) ?? model,
-                  tool_call: true,
-                  limit: { context: 128_000, output: 8_192 },
-                },
-              },
-            },
-          },
-        }
-        writeFileSync(join(workspace, "opencode.json"), JSON.stringify(cfg, null, 2))
+        writeFileSync(join(workspace, "opencode.json"), JSON.stringify(opencodeCustomProviderConfig({ ...options.customProvider, model }), null, 2))
       }
 
       const tokens = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 }
@@ -201,6 +224,11 @@ export async function runOpencodeBenchmark(options: {
       const answer = texts.join("").trim()
       const grade = gradeTask(workspace, task, answer)
       const subagentTokens = [...subagentSessions.values()].reduce((sum, child) => sum + child.input + child.output + child.reasoning, 0)
+      // Snapshot these arrays: on timeout the promise resolves while the reader
+      // may still be draining stdout, which would otherwise keep mutating the
+      // shared arrays referenced by the record after it has been pushed.
+      const rawSnapshot = [...rawLines]
+      const toolSnapshot = [...toolTitles]
       runs.push({
         taskId: task.id,
         mode: "opencode" as unknown as AgentBenchmarkRun["mode"],
@@ -223,7 +251,7 @@ export async function runOpencodeBenchmark(options: {
         providerCostUsd: cost > 0 ? cost : undefined,
         latencyMs: Date.now() - started,
         attempts: 1,
-        toolSteps: toolTitles.length,
+        toolSteps: toolSnapshot.length,
         finishReason: error ? "error" : "stop",
         retrievalTokens: 0,
         retrievalCandidates: 0,
@@ -234,10 +262,10 @@ export async function runOpencodeBenchmark(options: {
           harness: "opencode",
           model,
           error,
-          rawEvents: rawLines,
+          rawEvents: rawSnapshot,
           subagentSessions: [...subagentSessions.entries()].map(([sessionID, child]) => ({ sessionID, ...child })),
           subagentTokens,
-          toolHistogram: toolTitles.reduce<Record<string, number>>((acc, tool) => { acc[tool] = (acc[tool] || 0) + 1; return acc }, {}),
+          toolHistogram: toolSnapshot.reduce<Record<string, number>>((acc, tool) => { acc[tool] = (acc[tool] || 0) + 1; return acc }, {}),
         },
       })
     }
