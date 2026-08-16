@@ -40,7 +40,7 @@
 
 | Fix | Source | Cheap | Smart | Fast | Notes |
 |---|---|---|---|---|---|
-| **B1. Read-cache / "don't re-read"** (hash-stub unchanged files) | #7 / Tier-2 #9 | `+` | `~` | `+` | Kills audit-loop re-reads; 41-read shell-loop runs drop. **P1.** |
+| **B1. Read-cache / "don't re-read"** (hash-stub unchanged files) | #7 / Tier-2 #9 | `~` | `~` | `~` | **TESTED IN TIER-E, FAILED.** The content-less stub pushed the model into `bash Get-Content` (bash 810 -> 1608) and did not stop the doom-loop (detector keys on args, not output). Reverted/removed. Do NOT re-implement as a stub. |
 | **B2. Read/glob/grep-ratio hard gate** (reads ≥8 & edits==0 → block) | ToolGate | `+` | `~` | `+` | Complements identical-fingerprint doom-loop. |
 | **B3. Compact tool schemas (TSCG, ≥51% cut)** | #10 / Tier-3 #11 | `+` | `~` | `~` | Cuts the 707-token fixed/step overhead directly. |
 | **B4. Read-output gating (ContextSniper)** | Tier-2 #8 | `+` | `~` | `~` | Return requested slice by default; `full:true` for whole file. |
@@ -81,8 +81,8 @@
 ## 3. Recommended priority (weighted ROI)
 
 **Tier 1 — do now (cheap to build, big win):**
-1. **A1** — fix the continuation bug (P0): +9 solves, solves the entire remaining gap. One `prepareStep` branch + a counter.
-2. **B1 + B2** — read-cache + audit-ratio gate: cuts shell-loop/long-horizon reads (41/run → ~10), saves tokens AND wall time.
+1. **A1** — fix the continuation bug (P0): +9 solves, solves the entire remaining gap. One `prepareStep` branch + a counter. **DONE in TIER-D.**
+2. **B1 is dead** — read-cache stub tested-and-failed in TIER-E (see `TIER_E_RESULTS.md` §9). Replacement: **fix the doom-loop detector** to exempt stub-returning reads, plus **targeted-test discipline** (`bun test <failing-file>`) to cut the 20-40 bash/run toward opencode's ~8-9.
 3. **A6** — cap research children at 6: cheaper delegation, less continuation.
 
 **Tier 2 — high ROI:**

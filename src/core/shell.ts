@@ -1,5 +1,5 @@
 const DEFAULT_TIMEOUT_MS = 120_000
-const DEFAULT_OUTPUT_CHARS = 12_000
+const DEFAULT_OUTPUT_CHARS = 4_000
 
 // Kills the spawned child AND its process tree so a daemonizing grandchild
 // (servers, watch, npm run dev) cannot keep the pipes open and hang the run.
@@ -62,6 +62,16 @@ export interface ShellOptions {
 
 export function isTestCommand(command: string): boolean {
   return /(^|\s)(bun\s+test|vitest(?:\s|$)|npm\s+(?:run\s+)?test|pnpm\s+(?:run\s+)?test|yarn\s+test)(\s|$)/i.test(command)
+}
+
+/** Canonicalize a test command for memoization so cosmetic flag differences
+ * (`| Select-Object -First N`, `2>&1`, trailing whitespace) still hit the cache. */
+export function normalizeTestCommand(command: string): string {
+  return command
+    .replace(/\s*\|\s*Select-Object\s+-First\s+\d+\s*$/i, "")
+    .replace(/\s*2>&1\s*$/, "")
+    .replace(/\s+/g, " ")
+    .trim()
 }
 
 /**

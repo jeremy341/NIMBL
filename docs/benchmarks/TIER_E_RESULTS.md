@@ -1,6 +1,8 @@
-# TIER-E Results — 4-Fix Token-Efficiency Set (OpenRouter - StreamLake - deepseek-v4-flash-0731)
+# TIER-E Results — 4-Fix Token-Efficiency Set (NEGATIVE RESULT, superseded)
 
-Full 300-run tier-b re-run after the **4-fix token-efficiency set**: read-cache (T0.4), test-output summarization (T0.1), test-run memoization (T0.2), and one-shot tool-result pruning (T1.1). Executed live on **OpenRouter** via the runtime custom provider (the `.env` OPENROUTER_KEY was found revoked mid-project; the valid key is in `~/.local/share/opencode/auth.json`), pinned **StreamLake**, model `deepseek/deepseek-v4-flash-0731:StreamLake`, concurrency 8, 180 req/min.
+> **Status: superseded.** This run measured the **original 4-fix set** as first built and it **failed** (tokens +79%, cost +83%). Post-run raw-event analysis identified the two regressions, the fixes were **reverted or corrected**, and a validation preflight (`agent-benchmark-20260728-s3-live-1786887901021.jsonl`) re-measured the corrected set. **This document is the historical negative result; the retained lessons are in §8 and the current code state differs from what this run measured.** The next full run supersedes this doc.
+
+Full 300-run tier-b re-run after the **4-fix token-efficiency set as first built**: read-cache (T0.4), test-output summarization (T0.1), test-run memoization (T0.2), and one-shot tool-result pruning (T1.1). Executed live on **OpenRouter** via the runtime custom provider (the `.env` OPENROUTER_KEY was found revoked mid-project; the valid key is in `~/.local/share/opencode/auth.json`), pinned **StreamLake**, model `deepseek/deepseek-v4-flash-0731:StreamLake`, concurrency 8, 180 req/min.
 
 - **Raw JSONL:** `.nimbl/benchmarks/agent-benchmark-20260728-s3-live-1786885433475.jsonl` (300 records)
 - **Per-run raws:** `.nimbl/benchmarks/2026-08-16-tierE-tokenfixes-1786885433475/raw-nimbl/` (300 files) + `run.log`
@@ -136,3 +138,20 @@ All 7 still die at `read` (the doom-loop guard fires on identical read *inputs* 
 | Avg tokens / usable | 40,992 | 73,451 | **REGRESSED +79%** |
 
 **Conclusion:** quality nudged up (291/300, zeroed 7, sh-suite-green 11/12) but the token-efficiency goal failed — cost +83%. Next iteration must (a) revert to bounded per-step pruning OR implement rolling condensation (T1.2) instead of one-shot prune, and (b) make the read-cache stub return usable content or drop it in favor of the doom-loop detector fix, since the stub merely pushed the model into `bash Get-Content`.
+
+---
+
+## 9. Post-run fix (what the code now does — supersedes this run)
+
+The two regressions were root-caused from the raw event streams (identical seeds, so behavior diff is attributable to the code) and corrected:
+
+| # | Original 4-fix change | Verdict after analysis | Current code |
+|---|---|---|---|
+| T1.1 one-shot prune | **REGRESSION** — history grew 2,418 -> 6,154 tokens/step on lh-fix-all (unbounded re-billing) | **Reverted** to per-step pruning (bounded history; TIER-D behavior) |
+| T0.1 test summarizer v1 | **REGRESSION** — dropped failing file path + Expected/Received, so the model re-ran the full suite ~2x (lh-fix-all 55 -> 132 test runs) | **Rewritten** to emit per-file `FAIL <path>` + test name + error + expected/received + totals. Verified on a real hidden-suite failure: 10,874 chars -> 1,399 (~88% cut) with attribution intact |
+| T0.4 read-cache stub | **REGRESSION** — the content-less stub pushed the model into `bash Get-Content` (bash 810 -> 1608) and did NOT fix the doom-loop (it keys on args, not output) | **Removed** — reads return real content again |
+| T0.2 test memoization | neutral (fired 9x) | **Kept** |
+
+Validation preflight (48 runs, hard tasks, corrected set): `agent-benchmark-20260728-s3-live-1786887901021.jsonl`. Tokens on solved runs returned toward TIER-D (lh-fix-all 3,074 tok/step vs TIER-D 2,418; sh-suite-green 1,982 vs 2,395) but that preflight still carried the read-cache; the fully corrected set (read-cache removed) needs a fresh run to confirm.
+
+**Kept lessons for the next run:** (1) bounded history is worth more than a stable cache prefix — one-shot prune fails; (2) test summaries must preserve file attribution or the model compensates with re-runs; (3) a read-cache stub that returns no content is worse than no cache at all. Next benchmark must be a **full 300-run run of the corrected set**.

@@ -30,7 +30,7 @@ Bash output is already capped at 12k chars — **not** the main problem. The gap
 | **T0.1** | **Test-output delta parser** — detect `bun test` in the bash tool, run with `--reporter=json --bail`, parse deterministically, return `PASS n FAIL m` + first-N failures with <=10-line snippets (~200-400 tokens vs 2-20k). Full log on disk for on-demand read. | SWE-agent ACI, Aider `/test`, ContextSniper | **+** | **+** | **+** |
 | **T0.2** | **Test-run memoization** — key by (hash of changed-file set + command); unchanged -> cached verdict, no subprocess, no re-read | Go test cache, LivePlan/FailFast | **+** | ~ | **+** |
 | **T0.3** | **Diff-scoped test selection** — after an edit run only affected + last-failed tests (`bun test <file>` from dependency graph; `--onlyChanged` semantics) | NameRTS (skips 69.9% of files, -45.6% time), vitest `related` | **+** | **+** | **+** |
-| **T0.4** | **Read-cache** — unchanged-file re-read returns "(unchanged since step N)" stub; also targets the 10 remaining identical-read doom-loop deaths | Remember Don't Re-read (-52-90%), ContextSniper | **+** | **+** | **+** |
+| **T0.4** | ~~Read-cache — unchanged-file re-read stub~~ | **TESTED, FAILED (TIER-E).** Content-less stub pushed the model into `bash Get-Content` and did not fix the doom-loop (detector keys on args, not output). Removed. Replacement: fix the doom-loop detector itself. | Remember Don't Re-read (-52-90%) | ~~ | ~~ | ~~ |
 | **T0.5** | **Test-command discipline in shell hint** — `--bail --reporter=json`, "run the single failing test, not the suite" | SWE-agent ACI (fail-fast) | **+** | ~ | **+** |
 
 ### Tier 1 — cache stability (turns 39-57% hit -> 85-95%)
@@ -69,16 +69,18 @@ Bash output is already capped at 12k chars — **not** the main problem. The gap
 
 Rationale: (1) attribution — bundling many changes makes a regression impossible to debug; (2) risk — condensation/phase-loop/subagents rewrite loop semantics or need cheap-model routing; (3) new-tool adoption — a brand-new tool needs its own validation pass.
 
-**Before the next benchmark (all deterministic, no extra LLM, no new tool, no loop rewrite):**
+> **RESULT (TIER-E): the 4-fix set as first built FAILED — tokens +79%, cost +83%.** Full post-run analysis and the corrected state are in `TIER_E_RESULTS.md` §9. The original implementation plan below is kept only as history; **current code = per-step pruning (restored) + file-path-preserving test summarizer + test memoization; read-cache removed.**
 
-1. **T0.4 read-cache** — targets the 10 remaining identical-read doom-loop deaths + cuts 40-60 reads/run.
-2. **T0.1 test-output delta parsing** (implemented inside the existing bash tool, not a new tool) — test output 2.3k chars -> ~300-500 tokens/run.
-3. **T0.2 test memoization** — 20-28 test runs -> ~5-8.
-4. **T1.1 append-only prune** — cache hit 39% -> ~80%+ (the biggest structural lever; small code change, preserves the AI SDK v7 structured-output shape).
+**What was originally planned (historical):**
+
+1. ~~**T0.4 read-cache**~~ — **FAILED/removed** (stub pushed the model into `bash Get-Content`; did not fix the doom-loop).
+2. **T0.1 test-output delta parsing** — **kept, but rewritten** to preserve failing file paths + Expected/Received (v1 dropped them, causing 2x full-suite re-runs).
+3. **T0.2 test memoization** — **kept** (neutral, fired 9x).
+4. ~~**T1.1 one-shot prune**~~ — **FAILED/reverted** to per-step pruning (one-shot let lh-fix-all history grow to 6,154 tokens/step).
 
 **Deferred to separate runs:** T1.2 rolling condensation, T2.1 phase-gated loop, T2.2 bounded reflection, T2.3 plan-first, T2.4 drift monitor, T3.1/T3.2 subagents.
 
-**Expected after the 4-fix set:** lh/sh tokens ~200-290k -> ~100-140k, cache hit -> ~80%, solves toward ~296/300.
+**Next benchmark requirement:** a fresh full 300-run run of the corrected set (per-step pruning + fixed summarizer, no read-cache) to supersede TIER-E. Target: TIER-D solves (288+) at TIER-D-or-better tokens, then the T1.2/T0.3 levers to get under opencode.
 
 ---
 

@@ -1,6 +1,8 @@
 # TIER-E vs opencode — Token-Efficiency Set Head-to-Head
 
-TIER-E (NIMBL, 4-fix token set, 300 runs) vs the latest opencode run (run6 FINAL 4-mode-vs-opencode, 75 runs). Same corpus (`benchmarks/corpus/tier-b`), same seed `20260728`, same task set (25 tasks), same live OpenRouter **StreamLake** `deepseek/deepseek-v4-flash-0731` endpoint. opencode raw: `.nimbl/benchmarks/2026-08-15-run6-FINAL-4mode-vs-opencode-1786808124244/opencode-benchmark-20260728-s3-1786811591640.jsonl`.
+> **Status: superseded / negative result.** This compares the **original 4-fix set** (which regressed NIMBL tokens +79% and is superseded — see `TIER_E_RESULTS.md`). It is kept as the quantitative record of *why* NIMBL was 5x more expensive than opencode on lh-fix-all, and the per-task/per-step numbers here are the baseline any corrected set must beat. **The corrected code (per-step pruning + file-path-preserving summarizer, no read-cache) post-dates this document and needs a fresh full run.**
+
+TIER-E (NIMBL, 4-fix token set as first built, 300 runs) vs the latest opencode run (run6 FINAL 4-mode-vs-opencode, 75 runs). Same corpus (`benchmarks/corpus/tier-b`), same seed `20260728`, same task set (25 tasks), same live OpenRouter **StreamLake** `deepseek/deepseek-v4-flash-0731` endpoint. opencode raw: `.nimbl/benchmarks/2026-08-15-run6-FINAL-4mode-vs-opencode-1786808124244/opencode-benchmark-20260728-s3-1786811591640.jsonl`.
 
 **Config caveat:** NIMBL runs 4 retrieval modes x 3 samples (300 runs, 12/task); opencode runs 3 samples single-mode (75 runs, 3/task). Token averages are per-run, so they are comparable; solve rates are shown per-run and per-task.
 
@@ -73,7 +75,8 @@ TIER-E's one-shot prune delivered the intended cache-prefix stability (74% cache
 
 ## 6. Next steps (ranked, from TIER_D_LONG_HORIZON plan)
 
-1. **T1.2 rolling condensation** — replace one-shot prune with OpenHands-style iterative append-only condensation (keep first ~4 msgs + recent tail verbatim, summarize middle once per ~40 steps). Preserves the 74% cache-read win *without* unbounded growth.
-2. **Revert or constrain the read-cache stub** — it pushed the model into `bash Get-Content` (bash calls 810 -> 1608). Either return the real (bounded) content with an "(unchanged)" note, or drop the stub and instead fix the doom-loop detector to exempt reads that return a cache stub.
-3. **Fix the doom-loop detector** to key on emitted content (stub = not a doom loop), which also clears the remaining 7 zeroed reads.
-4. Re-run the focused hard-task preflight (48 runs) before a full benchmark.
+1. **Correct the 4-fix set (done in code, needs a fresh full run).** Reverted one-shot prune -> per-step pruning; rewrote the test summarizer to keep failing file paths + Expected/Received; removed the read-cache stub (it pushed the model into `bash Get-Content`). Post-run validation preflight (48 runs) showed solved-run tokens returning toward TIER-D, but that preflight still carried the read-cache; the fully corrected set must be re-measured at full 300-run scale.
+2. **T1.2 rolling condensation** — replace per-step prune with OpenHands-style iterative append-only condensation (keep first ~4 msgs + recent tail verbatim, summarize middle once per ~40 steps). Preserves the 74% cache-read win *without* unbounded growth — this is how opencode keeps ~90% cache-read with bounded history.
+3. **Fix the doom-loop detector** to exempt reads that return a cache stub (or drop the stub entirely — already done) so the remaining zeroed runs clear.
+4. **Targeted-test discipline (T0.3/T2.1)** — opencode runs ~8-9 bash/run vs NIMBL's 20-40; steer the model to run `bun test <failing-file>` instead of the full suite. This is the biggest remaining step-count gap vs opencode.
+5. Re-run the focused hard-task preflight (48 runs) before a full benchmark.

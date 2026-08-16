@@ -12,7 +12,7 @@ import type { PermissionSettings } from "./settings"
 import { permissionExplanation, permissionFor } from "./permissions"
 import { ASSISTANT_RESPONSE_STYLE, stripEmojis } from "./response-style"
 import { resolvePathAllowExternal, resolveProjectPath, resolveUnprotectedProjectPath, type ResolvedToolPath } from "./project-path"
-import { isTestCommand, runShellCommand, summarizeTestOutput } from "./shell"
+import { isTestCommand, normalizeTestCommand, runShellCommand, summarizeTestOutput } from "./shell"
 import { applyEdit } from "./edit-apply"
 import { fitRequestToBudget, type RequestBudgetBreakdown } from "./request-budget"
 import { countTextTokens } from "./tokenizers"
@@ -101,6 +101,9 @@ export interface AgentRunOptions {
   /** Read-only tool calls allowed since the last edit before prepareStep injects a
    * "commit an edit now" directive. Universal guard against audit spirals. */
   readBudget?: number
+  /** Read-only tool calls allowed since the last edit before the read tool refuses
+   * content entirely (hard block). Defaults to 20 (warn at readBudget first). */
+  readHardBudget?: number
   runID?: string
   parentTaskID?: string
   onTaskEvent?: (event: { type: "step" | "budget" | "doom-loop"; detail: string }) => void
@@ -197,7 +200,8 @@ function budgetPromptParts(text: string) {
 function toolID() { return Math.random().toString(36).slice(2, 10) }
 
 function shellDescription() {
-  const body = "Run a bounded shell command in the current project. Shell filesystem changes are not included in NIMBL's file-edit undo history. "
+  const body = "Run a bounded shell command in the current project. Shell filesystem changes are not included in NIMBL's file-edit undo history. " +
+    "When a test run fails and the output names a failing file, run that file directly (e.g. `bun test <file>`) to iterate on the fix; run the full suite only for the final verification. "
   if (process.platform === "win32") {
     return body +
       "Commands run in PowerShell (powershell.exe -NoProfile). Use PowerShell syntax: Get-ChildItem (or ls) and Get-Content (or cat) for listing/reading; avoid POSIX-only utilities like find, head, tail, or sed. Redirect stdout and stderr with 2>&1 or 2>&1 | Select-Object -First N; do not use 2>/dev/null (invalid in PowerShell). When running a command that emits non-zero exits on the project's test tool, allow it and inspect the output."
@@ -328,10 +332,6 @@ export function pruneOldToolResults(messages: readonly unknown[], tail = 6, minC
   return changed ? next : (messages as unknown[])
 }
 
-export function readCacheKey(path: string, startLine?: number, endLine?: number) {
-  return `${path}\0${startLine || 1}\0${endLine || ""}`
-}
-
 /**
  * Graceful context-overflow fallback (A.1 / BRAINSTORM §12 #1): when a long
  * tool loop's accumulated history would exceed the model window, drop the
@@ -447,13 +447,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   // a verify nudge (A.4); the read gate itself does not require a test per edit.
   let pendingEdits = 0
   const readGateBudget = options.readBudget ?? 8
+  const readGateHard = options.readHardBudget ?? 20
   const enforceReadGate = options.mode === "build"
-  const readCache = new Map<string, { signature: string; output: string }>()
   const testRunCache = new Map<string, { code: number; output: string }>()
   const invalidateFileCaches = (paths: readonly string[]) => {
-    for (const path of paths) {
-      for (const key of readCache.keys()) if (key.startsWith(`${path}\0`)) readCache.delete(key)
-    }
+    void paths
     testRunCache.clear()
   }
   const gateDirective = () => {
@@ -510,10 +508,12 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       execute: async ({ path, startLine, endLine }) => {
         const event = toolID(); emitTool({ id: event, tool: "read", state: "running", title: "Read " + path, path })
         try {
-          // Hard read-to-edit gate: refuse content once the investigation budget
-          // is exhausted without any edit. The model cannot audit forever; it must
-          // edit (or answer) before more reads are allowed.
-          if (enforceReadGate && readsSinceEdit >= readGateBudget) {
+          // Hard read-to-edit gate: refuse content only once the investigation
+          // budget is far exceeded without any edit (default 20 reads). The
+          // advisory directive fires earlier at readBudget (8) via prepareStep;
+          // this hard block is the last resort so localization is not starved
+          // the way opencode's 63-read lh-fix-all runs would be at a gate of 8.
+          if (enforceReadGate && readsSinceEdit >= readGateHard) {
             const directive = gateDirective()
             emitTool({ id: event, tool: "read", state: "completed", title: "Read blocked by investigation budget", path, output: directive })
             return directive
@@ -522,21 +522,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           await approveExternal(target, event)
           await approve("read", "Read " + target.rel, "Read this file.", undefined, target.rel, event)
           readsSinceEdit++
-          const key = readCacheKey(target.full, startLine, endLine)
-          const stat = statSync(target.full)
-          const signature = `${stat.size}:${stat.mtimeMs}`
-          const cached = readCache.get(key)
-          if (cached?.signature === signature) {
-            const output = `[Unchanged since previous read; use the earlier output for ${target.rel}]`
-            emitTool({ id: event, tool: "read", state: "completed", title: "Read unchanged " + target.rel, path: target.rel, output })
-            return output
-          }
-          const size = stat.size
+          const size = statSync(target.full).size
           if (size > MAX_FILE_BYTES * 8) return `Error: File is ${size} bytes, exceeding the read limit. Use bash to inspect it in parts.`
           const lines = readFileSync(target.full, "utf8").split("\n")
           const text = lines.slice((startLine || 1) - 1, endLine || lines.length).map((line, index) => String((startLine || 1) + index).padStart(5) + "  " + line).join("\n")
           const output = clip(text)
-          readCache.set(key, { signature, output })
           emitTool({ id: event, tool: "read", state: "completed", title: "Read " + target.rel, path: target.rel, output })
           return output
         } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "read", state: "failed", title: "Read " + path, detail: message }); return "Error: " + message }
@@ -682,13 +672,14 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         const event = toolID(); emitTool({ id: event, tool: "bash", state: "running", title: "Run command", detail: command })
         try {
           await approve("bash", "Run command", command, undefined, command, event)
-          let result = testRunCache.get(command)
+          const cacheKey = isTestCommand(command) ? normalizeTestCommand(command) : command
+          let result = testRunCache.get(cacheKey)
           const cached = Boolean(result)
           if (!result) {
             result = await runShellCommand(command, options.root, { signal: options.abortSignal })
             if (isTestCommand(command)) {
               result = { ...result, output: summarizeTestOutput(command, result.output, result.code) }
-              testRunCache.set(command, result)
+              testRunCache.set(cacheKey, result)
             }
           }
           readsSinceEdit = 0; pendingEdits = 0
@@ -940,18 +931,21 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         if (part.type === "tool-call") {
           executedToolSteps++
           const call = part as unknown as { toolName?: string; input?: unknown; args?: unknown }
-          // The doom-loop guard protects against the read/glob/grep *audit loop*.
+          // The doom-loop guard protects against the glob/grep *audit loop*.
           // bash is deliberately excluded: re-running the same verification
           // command (e.g. `bun test`) between edits is the legitimate
           // shell-loop pattern, not a stuck loop (the 15 zeroed runs in the
           // zeroed-fix preflight were all shell-loop tasks killed on a 3rd
           // identical `bash bun test` call).
+          // `read` is also excluded: the read-gate (S2) already bounds audit
+          // loops by refusing content, and the TIER-E preflight lost 20/48
+          // runs to identical-read doom-loop deaths (opencode reads freely).
           const toolName = call.toolName || "tool"
           const fingerprint = toolName === "bash" ? `bash-${toolID()}` : JSON.stringify([toolName, call.input ?? call.args])
           const count = (repeatedToolCalls.get(fingerprint) || 0) + 1
           repeatedToolCalls.set(fingerprint, count)
           options.onTaskEvent?.({ type: "step", detail: `${toolName} step ${count}` })
-          if (toolName !== "bash" && count >= (options.doomLoopThreshold ?? 3)) {
+          if (toolName !== "bash" && toolName !== "read" && count >= (options.doomLoopThreshold ?? 3)) {
             // Ask once per fingerprint; an approved fingerprint may continue.
             if (!allowedRepeatedCalls.has(fingerprint)) {
               options.onTaskEvent?.({ type: "doom-loop", detail: `Repeated ${toolName} call detected.` })

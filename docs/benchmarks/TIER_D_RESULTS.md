@@ -116,7 +116,9 @@ The two fixes landed on the hard families: **shell-loop 13 -> 18/24, long-horizo
 
 ## 7. Remaining zeroed runs (10/300)
 
-All 10 are **doom-loop on identical `read` re-reads** (e.g. the same file read 3x with identical args) - a genuine audit-loop pattern, correctly caught by the guard. The bash exemption fixed the shell-loop class; the read-re-read class is exactly what the **read-cache fix (B1)** targets (unchanged-file re-reads return a short stub instead of content).
+All 10 are **doom-loop on identical `read` re-reads** (e.g. the same file read 3x with identical args) - a genuine audit-loop pattern, correctly caught by the guard. The bash exemption fixed the shell-loop class.
+
+> **Update (post-TIER-E):** the originally-planned **read-cache (B1)** fix was implemented in TIER-E and **failed** — the content-less stub pushed the model into `bash Get-Content` and did NOT stop the doom-loop (the detector keys on `[tool, args]`, not output). Read-cache was removed. The real remaining fix for these deaths is the **doom-loop detector** (exempt reads that return a cache stub) and/or **targeted-test discipline**, not a read stub.
 
 | task | zeroed |
 |---|---|
@@ -138,4 +140,6 @@ All 10 are **doom-loop on identical `read` re-reads** (e.g. the same file read 3
 | Zeroed runs | 18 | **10** | improving |
 | Avg latency | 62 s | **35 s** | improved |
 
-**Verdict:** 288/300 (96%), zero infrastructure errors, lh-fix-all closed (4 -> 9/12), latency halved, runtime 40% faster. The remaining gap is 10 identical-read doom-loop deaths - the read-cache (B1) fix is the natural next step.
+**Verdict:** 288/300 (96%), zero infrastructure errors, lh-fix-all closed (4 -> 9/12), latency halved, runtime 40% faster. The remaining gap is 10 identical-read doom-loop deaths.
+
+> **Update (post-TIER-E):** the read-cache approach for those deaths was attempted and **failed** (see `TIER_E_RESULTS.md` §9). The corrected path is the doom-loop-detector fix and/or targeted-test discipline.

@@ -17,7 +17,9 @@ Head-to-head between the **TIER-D NIMBL full run** (300 runs, zeroed-fix) and th
 | Avg latency | 60.9 s | 34 s (prompt-cache) | **35 s** | **-43%** |
 | Zeroed/errored | 0 | 0 | 10/300 | - |
 
-**NIMBL is now ~12.5% more token-efficient than opencode and ~43% faster per run**, with the solve gap down to 4 points - and all 10 remaining zeroed runs are a single known fix (read-cache) away.
+**NIMBL is now ~12.5% more token-efficient than opencode and ~43% faster per run**, with the solve gap down to 4 points - and all 10 remaining zeroed runs are a single known class (identical-read doom-loop).
+
+> **Update (post-TIER-E):** the read-cache approach for that class was tried and **failed** (see `TIER_E_RESULTS.md` §9); the corrected path is the doom-loop-detector fix and/or targeted-test discipline.
 
 ---
 
@@ -79,8 +81,10 @@ NIMBL is cheaper on **20 of 25 tasks**. opencode remains cheaper only on lh-fix-
 - lh-fix-all now solves 9/12 (was 4/12 in the previous run), sh-hidden-green 10/12, sh-suite-green 8/12.
 
 **opencode wins**
-- 100% solve rate (75/75) vs 96% - but NIMBL's remaining shortfall is **10 identical-read doom-loop deaths** plus 2 unsolved hard samples (mf-fulfill, lh-forced-context). The read-cache fix (B1) targets exactly these.
+- 100% solve rate (75/75) vs 96% - but NIMBL's remaining shortfall is **10 identical-read doom-loop deaths** plus 2 unsolved hard samples (mf-fulfill, lh-forced-context).
 - Long-horizon / shell-loop per-run tokens lower, because opencode solves 100% of a small sample while NIMBL's solved runs carry heavy cost.
+
+> **Update (post-TIER-E):** the read-cache fix that was planned for those 10 deaths was implemented and **failed** — see `TIER_E_RESULTS.md` §9. The corrected path is the doom-loop-detector fix and/or targeted-test discipline, not a read stub.
 
 ---
 
@@ -99,5 +103,5 @@ NIMBL's $0.44 total remains a trivial fraction of the $10 OpenRouter credit.
 
 1. **The zeroed-fix run is the strongest NIMBL result measured:** 288/300 (96%), ~12.5% more token-efficient than opencode, ~43% faster, with the solve-rate gap down to 4 points.
 2. **lh-fix-all closed** (4 -> 9/12) - the fix that unblocked the hardest task. Shell-loop family +5 solves.
-3. **Remaining gap is one known fix:** the 10 identical-read doom-loop deaths. Implementing read-cache (B1) should push solves toward ~298/300 and eliminate the last token-inflated families.
-4. Next step: implement B1 read-cache, re-run, and NIMBL should reach ~99% while keeping the token/latency edge.
+3. **Remaining gap is the 10 identical-read doom-loop deaths.** The originally-planned read-cache (B1) fix was tried in TIER-E and **failed** (stub pushed the model into `bash Get-Content`; the detector keys on args, not output). Read-cache is removed from the code.
+4. Next step: fix the doom-loop detector (exempt stub-returning reads) and/or add targeted-test discipline, then re-run a full 300-run benchmark of the corrected set.

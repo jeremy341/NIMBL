@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { isTestCommand, runShellCommand, summarizeTestOutput } from "@/core/shell"
+import { isTestCommand, normalizeTestCommand, runShellCommand, summarizeTestOutput } from "@/core/shell"
 
 describe("shell execution", () => {
   it("stops commands that exceed their timeout", async () => {
@@ -41,5 +41,13 @@ describe("shell execution", () => {
     expect(output).toContain("Test command exited 0.")
     expect(output).toContain("5 pass, 0 fail")
     expect(output).not.toContain("(pass) a")
+  })
+
+  it("normalizes test commands so cosmetic flag differences hit the memoization cache", () => {
+    expect(normalizeTestCommand("bun test ./tests-hidden 2>&1")).toBe("bun test ./tests-hidden")
+    expect(normalizeTestCommand("bun test ./tests-hidden 2>&1 | Select-Object -First 120")).toBe("bun test ./tests-hidden")
+    expect(normalizeTestCommand("bun test  ./tests-hidden  2>&1")).toBe("bun test ./tests-hidden")
+    expect(normalizeTestCommand("bun test ./tests-hidden | Select-Object -First 5")).toBe("bun test ./tests-hidden")
+    expect(normalizeTestCommand("Get-Content a.ts")).toBe("Get-Content a.ts")
   })
 })

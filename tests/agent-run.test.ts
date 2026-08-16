@@ -13,7 +13,7 @@ vi.mock("ai", () => ({
 vi.mock("@ai-sdk/openai", () => ({ createOpenAI: () => Object.assign(() => ({}), { chat: () => ({}), responses: () => ({}) }) }))
 vi.mock("@ai-sdk/anthropic", () => ({ createAnthropic: () => () => ({}) }))
 
-import { runAgent, countReadsSinceEdit, pruneOldToolResults, readCacheKey, trimMessagesToWindow } from "@/core/agent"
+import { runAgent, countReadsSinceEdit, pruneOldToolResults, trimMessagesToWindow } from "@/core/agent"
 
 describe("agent execution", () => {
   beforeEach(() => {
@@ -428,7 +428,7 @@ describe("agent execution", () => {
       fullStream: {
         async *[Symbol.asyncIterator]() {
           for (let i = 0; i < 2; i++) {
-            yield { type: "tool-call", toolName: "read", input: { path: "note.txt" }, toolCallId: `call-${i}` }
+            yield { type: "tool-call", toolName: "grep", input: { query: "foo" }, toolCallId: `call-${i}` }
           }
           yield { type: "text-delta", text: "done" }
         },
@@ -450,7 +450,7 @@ describe("agent execution", () => {
       doomLoopThreshold: 2,
     })
 
-    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ tool: "doom_loop", target: "read" }))
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ tool: "doom_loop", target: "grep" }))
     expect(result.text).toContain("done")
   })
 
@@ -462,7 +462,7 @@ describe("agent execution", () => {
       fullStream: {
         async *[Symbol.asyncIterator]() {
           for (let i = 0; i < 6; i++) {
-            yield { type: "tool-call", toolName: "read", input: { path: "note.txt" }, toolCallId: `call-${i}` }
+            yield { type: "tool-call", toolName: "grep", input: { query: "foo" }, toolCallId: `call-${i}` }
           }
           yield { type: "text-delta", text: "done" }
         },
@@ -485,7 +485,7 @@ describe("agent execution", () => {
 
     // Approval must let the run continue (previously it hard-stopped one call later).
     expect(result.text).toContain("done")
-    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ tool: "doom_loop", target: "read" }))
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ tool: "doom_loop", target: "grep" }))
   })
 
   it("stops after a repeated tool call when the user does not approve", async () => {
@@ -496,7 +496,7 @@ describe("agent execution", () => {
       fullStream: {
         async *[Symbol.asyncIterator]() {
           for (let i = 0; i < 3; i++) {
-            yield { type: "tool-call", toolName: "read", input: { path: "note.txt" }, toolCallId: `call-${i}` }
+            yield { type: "tool-call", toolName: "grep", input: { query: "foo" }, toolCallId: `call-${i}` }
           }
           yield { type: "text-delta", text: "done" }
         },
@@ -526,7 +526,7 @@ describe("agent execution", () => {
       fullStream: {
         async *[Symbol.asyncIterator]() {
           for (let i = 0; i < 4; i++) {
-            yield { type: "tool-call", toolName: "read", input: { path: "note.txt" }, toolCallId: `call-${i}` }
+            yield { type: "tool-call", toolName: "grep", input: { query: "foo" }, toolCallId: `call-${i}` }
           }
           yield { type: "text-delta", text: "done" }
         },
@@ -547,6 +547,39 @@ describe("agent execution", () => {
       doomLoopThreshold: 2,
     })).rejects.toThrow("blocked by project policy")
     // No approval prompt should be issued when policy is a hard deny.
+    expect(requestApproval).not.toHaveBeenCalled()
+  })
+
+  it("does not treat repeated read calls as a doom loop (read-gate is the audit guard)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-doomread-"))
+    const requestApproval = vi.fn(async () => "once" as const)
+
+    streamText.mockImplementationOnce((config: any) => ({
+      fullStream: {
+        async *[Symbol.asyncIterator]() {
+          for (let i = 0; i < 5; i++) {
+            yield { type: "tool-call", toolName: "read", input: { path: "note.txt" }, toolCallId: `call-${i}` }
+          }
+          yield { type: "text-delta", text: "done" }
+        },
+      },
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    }))
+
+    const result = await runAgent({
+      root,
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "build",
+      messages: [{ role: "user", text: "read note" }],
+      permissions: { "*": "allow", doom_loop: "deny" },
+      requestApproval,
+      onEvent: () => {},
+      doomLoopThreshold: 2,
+    })
+
+    expect(result.text).toBe("done")
     expect(requestApproval).not.toHaveBeenCalled()
   })
 
@@ -598,7 +631,7 @@ describe("agent execution", () => {
     expect(countReadsSinceEdit([])).toBe(0)
   })
 
-  it("hard-blocks reads once the investigation budget is exhausted", async () => {
+  it("warns but does not hard-block reads at the advisory budget (hard gate is higher)", async () => {
     const root = mkdtempSync(join(tmpdir(), "nimbl-agent-gate-"))
     writeFileSync(join(root, "note.txt"), "content")
     writeFileSync(join(root, "note2.txt"), "content2")
@@ -630,14 +663,53 @@ describe("agent execution", () => {
       permissions: { "*": "allow" },
       requestApproval: async () => "once",
       onEvent: () => {},
-      readBudget: 10,
+      readBudget: 8,
+      readHardBudget: 20,
     })
 
-    // Reads 1-10 pass (10 successful reads); reads 11-14 are blocked with the
-    // directive instead of returning content.
-    expect(readOutput.match(/Investigation budget reached/g)).toHaveLength(4)
-    expect(readOutput.match(/content2/g)).toHaveLength(1)
-    expect(readOutput.match(/Unchanged since previous read/g)).toHaveLength(8)
+    // All 14 reads return real content (the hard gate at 20 is never reached);
+    // the advisory directive at readBudget (8) is injected via prepareStep, not
+    // by the read tool, so it does not appear in read tool output.
+    expect(readOutput).not.toContain("Investigation budget reached")
+    expect(readOutput.match(/content2/g)).toHaveLength(7)
+  })
+
+  it("hard-blocks reads only once the hard read budget is exceeded", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-gate-hard-"))
+    writeFileSync(join(root, "note.txt"), "content")
+    let readOutput = ""
+
+    streamText.mockImplementationOnce((config: any) => ({
+      fullStream: {
+        async *[Symbol.asyncIterator]() {
+          const outputs = []
+          for (let i = 0; i < 24; i++) {
+            outputs.push(await config.tools.read.execute({ path: "note.txt" }))
+          }
+          readOutput = outputs.join("\n")
+          yield { type: "text-delta", text: "done" }
+        },
+      },
+      usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
+    }))
+
+    await runAgent({
+      root,
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      apiKey: "test-key",
+      mode: "build",
+      messages: [{ role: "user", text: "read files" }],
+      permissions: { "*": "allow" },
+      requestApproval: async () => "once",
+      onEvent: () => {},
+      readBudget: 8,
+      readHardBudget: 10,
+    })
+
+    // Reads 1-10 return content; reads 11-24 are blocked with the directive.
+    expect(readOutput.match(/Investigation budget reached/g)).toHaveLength(14)
+    expect(readOutput.match(/content/g)).toHaveLength(10)
   })
 
   it("does not hard-block reads outside Build mode", async () => {
@@ -796,11 +868,6 @@ describe("agent execution", () => {
       { role: "tool", content: [{ type: "tool-result", toolCallId: "c1", toolName: "read", output: "short" }] },
     ]
     expect(pruneOldToolResults(messages, 6, 200)).toBe(messages)
-  })
-
-  it("builds distinct read-cache keys for line ranges", () => {
-    expect(readCacheKey("/tmp/a.ts")).not.toBe(readCacheKey("/tmp/a.ts", 2))
-    expect(readCacheKey("/tmp/a.ts", 2, 4)).toBe(readCacheKey("/tmp/a.ts", 2, 4))
   })
 
   describe("A.1 graceful context overflow (trimMessagesToWindow)", () => {
