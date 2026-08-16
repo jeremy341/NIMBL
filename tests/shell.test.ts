@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { isTestCommand, normalizeTestCommand, runShellCommand, summarizeTestOutput } from "@/core/shell"
+import { isReadLikeShellCommand, isTestCommand, normalizeTestCommand, runShellCommand, summarizeTestOutput } from "@/core/shell"
 
 describe("shell execution", () => {
   it("stops commands that exceed their timeout", async () => {
@@ -49,5 +49,12 @@ describe("shell execution", () => {
     expect(normalizeTestCommand("bun test  ./tests-hidden  2>&1")).toBe("bun test ./tests-hidden")
     expect(normalizeTestCommand("bun test ./tests-hidden | Select-Object -First 5")).toBe("bun test ./tests-hidden")
     expect(normalizeTestCommand("Get-Content a.ts")).toBe("Get-Content a.ts")
+  })
+
+  it("classifies shell file inspection conservatively for soft investigation accounting", () => {
+    expect(isReadLikeShellCommand("Get-Content src/a.ts")).toBe(true)
+    expect(isReadLikeShellCommand("cat src/a.ts | Select-String export")).toBe(true)
+    expect(isReadLikeShellCommand("bun test ./tests/a.test.ts")).toBe(false)
+    expect(isReadLikeShellCommand("Get-Content src/a.ts | Set-Content src/b.ts")).toBe(false)
   })
 })

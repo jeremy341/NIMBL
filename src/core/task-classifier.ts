@@ -42,9 +42,9 @@ const RETRIEVAL_LIMIT_WIDE = 16
 
 const GUIDANCE: Partial<Record<TaskFamily, string>> = {
   "long-horizon":
-    "This is a long-horizon task spanning multiple bugs or files. Track the sub-bugs with todowrite, work top-down, delegate independent bugs to a subagent when they are separable, and verify each fix with the listed tests before finishing.",
+    "This is a long-horizon task spanning multiple bugs or files. Track sub-bugs with todowrite, work top-down, batch related edits before verification, delegate only genuinely independent bugs, and run all failing tests together once per edit batch before final full-suite verification.",
   "shell-loop":
-    "This task is driven by running tests: run the suite, read the failure output, fix the offending source, and re-run until green. Verify each edit with the relevant test before moving on.",
+    "This task is driven by running tests: run the suite once to enumerate failures, fix related failures in a batch, run the failing test files together, and run the full suite only for final verification. Do not launch one unchanged test command per file.",
   "multi-file":
     "This task spans multiple files or domains. Read only the files the task names and the single listed verification test — do not open unrelated files or other tests. After the first pass, plan all edits, then apply them with as few edit calls as possible, batching changes across files before running any check. Verify once with the listed test; if it is red, re-read only the failing lines and the files you edited (use startLine/endLine ranges), make the minimal corrective edit, and re-run.",
   delegation:

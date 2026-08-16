@@ -28,6 +28,7 @@ export interface RetrievalRun {
   excerptChars: number
   latencyMs: number
   telemetry: Record<string, unknown>
+  benchmarkMetadata?: BenchmarkMetadata
 }
 
 export interface BenchmarkMetadata {
@@ -182,9 +183,9 @@ export function defensibleClaims(results: AblationSummary[]) {
   return claims
 }
 
-export function appendBenchmarkRecords(file: string, records: RetrievalRun[] | RetrievalRun) {
+export function appendBenchmarkRecords<T>(file: string, records: T[] | T, metadata?: BenchmarkMetadata) {
   mkdirSync(join(file, ".."), { recursive: true })
-  const lines = (Array.isArray(records) ? records : [records]).map((record) => JSON.stringify(record))
+  const lines = (Array.isArray(records) ? records : [records]).map((record) => JSON.stringify(metadata ? { ...(record as object), benchmarkMetadata: metadata } : record))
   appendFileSync(file, lines.join("\n") + (lines.length ? "\n" : ""), "utf8")
 }
 

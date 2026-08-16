@@ -11,7 +11,7 @@ if (!existsSync(resultsDir)) mkdirSync(resultsDir, { recursive: true })
 
 const meta = benchmarkMetadata({ seed, cacheState: process.env.NIMBL_BENCH_COLD === "1" ? "cold" : "warm" })
 const runs = await runRetrievalBenchmark({ corpusRoot, seed, samples })
-appendBenchmarkRecords(file, runs)
+appendBenchmarkRecords(file, runs, meta)
 const summary = summarizeBenchmarkRuns(runs)
 
 console.log(JSON.stringify({ meta, summary }, null, 2))

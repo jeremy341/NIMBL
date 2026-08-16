@@ -1,10 +1,12 @@
-# TIER-E vs opencode — Token-Efficiency Set Head-to-Head
+# TIER-E vs opencode — Token-Efficiency Set Head-to-Head (Corrected Accounting)
 
-> **Status: superseded / negative result.** This compares the **original 4-fix set** (which regressed NIMBL tokens +79% and is superseded — see `TIER_E_RESULTS.md`). It is kept as the quantitative record of *why* NIMBL was 5x more expensive than opencode on lh-fix-all, and the per-task/per-step numbers here are the baseline any corrected set must beat. **The corrected code (per-step pruning + file-path-preserving summarizer, no read-cache) post-dates this document and needs a fresh full run.**
+> **Status: superseded / negative result.** This compares the **original 4-fix set**. It remains the historical NIMBL regression record, but its opencode token columns excluded cache-read input while NIMBL columns included it. Do not use the old `5x` headline as a cost comparison.
+
+The corrected comparison rule is: use `billedTokens` or provider cost for money, and compare `totalTokens` only when both harnesses report full-sent input.
 
 TIER-E (NIMBL, 4-fix token set as first built, 300 runs) vs the latest opencode run (run6 FINAL 4-mode-vs-opencode, 75 runs). Same corpus (`benchmarks/corpus/tier-b`), same seed `20260728`, same task set (25 tasks), same live OpenRouter **StreamLake** `deepseek/deepseek-v4-flash-0731` endpoint. opencode raw: `.nimbl/benchmarks/2026-08-15-run6-FINAL-4mode-vs-opencode-1786808124244/opencode-benchmark-20260728-s3-1786811591640.jsonl`.
 
-**Config caveat:** NIMBL runs 4 retrieval modes x 3 samples (300 runs, 12/task); opencode runs 3 samples single-mode (75 runs, 3/task). Token averages are per-run, so they are comparable; solve rates are shown per-run and per-task.
+**Config caveat:** NIMBL runs 4 retrieval modes x 3 samples (300 runs, 12/task); opencode runs 3 samples single-mode (75 runs, 3/task). Solve rates are shown per-run and per-task. Historical token columns below require the accounting correction above.
 
 ---
 
@@ -19,7 +21,7 @@ TIER-E (NIMBL, 4-fix token set as first built, 300 runs) vs the latest opencode 
 | Avg latency | 30 s | ~ | 35 s |
 | Reference cost total | $3.12 | $0.51 | $1.73 |
 
-opencode remains more token-efficient per run (46.8k vs 73.5k) and 100% solved on its smaller sample. TIER-E regressed from TIER-D's 41k average to 73.5k because of the one-shot-prune / bash-Get-Content interaction (see TIER_E_RESULTS.md §6).
+The old statement that opencode was more token-efficient per run is invalid because it compared opencode billed-only tokens with NIMBL full-sent tokens. TIER-E still regressed internally from TIER-D's 41k full-sent average to 73.5k because of the one-shot-prune / bash-Get-Content interaction (see TIER_E_RESULTS.md §6).
 
 ---
 
@@ -51,7 +53,7 @@ NIMBL beats opencode on cheap-family tokens (single-fix 20.4k vs 28.2k, retrieva
 | mf-fulfill-dispatch | 10/12 · 49,365 tok · 24 steps | 3/3 · 44,618 tok · 20 steps | +1.1x |
 | dl-award-points | 12/12 · 70,515 tok · 15 steps | 3/3 · 49,439 tok · 11 steps | +1.4x |
 
-opencode's lh-fix-all run is **5x cheaper** (184k vs 939k) despite NIMBL solving sh-suite-green at 11/12. The opencode gap is almost entirely long-history re-billing: NIMBL's one-shot prune let lh-fix-all history grow to the window and re-bill it across 149 steps; opencode's bounded prune + compaction keeps history ~24 messages.
+The old `5x cheaper` statement is not a valid cost comparison. The corrected lesson is that TIER-E's one-shot prune let NIMBL history grow to the window and increased NIMBL's own full-sent and provider-cost metrics; opencode's cache behavior must be compared using the same billed/full fields.
 
 ---
 
@@ -69,7 +71,7 @@ TIER-E's one-shot prune delivered the intended cache-prefix stability (74% cache
 
 1. **Short tasks: NIMBL already wins** on tokens (single-fix, retrieval) and matches 100% solve. No change needed there.
 2. **Hard tasks: the TIER-E 4-fix set moved in the wrong direction.** It made shell-loop/horizon *cheaper-output but more-expensive-history*. The right lever, per opencode's own numbers, is **bounded history + stable prefix simultaneously** — i.e. T1.2 rolling condensation (append-only summary of the middle, keep head+tail verbatim), not one-shot prune.
-3. **opencode's 5x lh-fix-all advantage** is the concrete target: 939k -> ~184k means staying under ~90k avg per run even when solving.
+3. **The corrected `lh-fix-all` target** is billed-token parity, not the old 5x full-token comparison. TIER-D was approximately 183.7k billed versus opencode's 183.9k; TIER-F v2 is approximately 216k billed and should return toward parity by reducing verification steps.
 
 ---
 

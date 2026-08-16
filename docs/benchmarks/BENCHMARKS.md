@@ -40,8 +40,9 @@ NIMBL_BENCH_LIVE=1 NIMBL_PROVIDER=opencode-go NIMBL_MODEL=deepseek-v4-flash NIMB
 |---|---|
 | `solved` | every ground-truth verifier passed |
 | `passedChecks / totalChecks` | partial grading |
-| `inputTokens / outputTokens / totalTokens` | real (live) or synthetic token accounting |
-| `noCacheTokens / cacheReadTokens / cacheWriteTokens` | prompt-cache split |
+| `inputTokens / outputTokens / totalTokens` | full input/output accounting; input and total include cache-read input |
+| `noCacheTokens / cacheReadTokens / cacheWriteTokens` | prompt-cache split; noCacheTokens is uncached input only |
+| `billedTokens` | uncached input plus output; use provider cost for actual money |
 | `referenceCostUsd / providerCostUsd` | GPT-4o reference vs real provider cost |
 | `latencyMs` | wall time incl. context build + tool calls |
 | `toolSteps` | number of tool calls made |
@@ -55,6 +56,18 @@ NIMBL_BENCH_LIVE=1 NIMBL_PROVIDER=opencode-go NIMBL_MODEL=deepseek-v4-flash NIMB
 
 `benchmarks/corpus/agent-tasks.json` — frozen tasks against `benchmarks/corpus/fixture/`. Verifiers: `fileContains`, `fileAbsent`, `command` (exit 0), `answerContains`. **Do not edit fixture files or ground truth after a commit is tagged for a claim.**
 
+### Token-accounting rule
+
+NIMBL and opencode historically exposed different token semantics. NIMBL's old `totalTokens` included cache-read input, while the comparison adapter summed opencode's uncached step input and omitted its cache-read input. New records normalize both harnesses:
+
+- `totalTokens`: full input, including cache-read, plus output/reasoning.
+- `noCacheTokens`: input not served from cache.
+- `cacheReadTokens`: input served from cache.
+- `billedTokens`: uncached input plus output/reasoning; provider-specific cache pricing is reported separately.
+- `toolSteps`: unique terminal tool calls, not running and terminal events together.
+
+Historical reports must label old opencode totals as billed-only legacy totals and old NIMBL totals as full-sent legacy totals. They must not be compared without conversion.
+
 ### The rule for claims
 
 A lower-token result is **not** "better" if task quality regresses. Use the per-mode `solved` counts next to the token variance; only claim savings for modes that solve at least as many tasks as the baseline.
@@ -63,4 +76,4 @@ A lower-token result is **not** "better" if task quality regresses. Use the per-
 
 ## 3. Reproducibility guarantees
 
-Every run record carries `benchmarkMetadata`: timestamp, seed, git revision, git-dirty flag, NIMBL version, provider, model, context window, and cache state. Raw results are committed JSONL under `.nimbl/benchmarks/`. Re-run with the same seed + revision + env to reproduce.
+New JSONL records carry `benchmarkMetadata` per record: timestamp, seed, git revision, git-dirty flag, NIMBL version, provider, model, context window, and cache state. Raw results remain local under `.nimbl/benchmarks/`; preserve the metadata manifest with any published artifact. Re-run with the same seed + revision + env to reproduce.

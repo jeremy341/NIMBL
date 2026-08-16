@@ -64,6 +64,17 @@ export function isTestCommand(command: string): boolean {
   return /(^|\s)(bun\s+test|vitest(?:\s|$)|npm\s+(?:run\s+)?test|pnpm\s+(?:run\s+)?test|yarn\s+test)(\s|$)/i.test(command)
 }
 
+/** Count obvious file-inspection commands as investigation without making
+ * them automatically unsafe to execute. Pipes and unknown commands remain
+ * valid probes; callers use this only as a soft accounting signal. */
+export function isReadLikeShellCommand(command: string): boolean {
+  const normalized = command.trim()
+  if (!normalized || isTestCommand(normalized)) return false
+  if (/\b(?:Set-Content|Add-Content|Out-File|Remove-Item|New-Item|Set-Item|Copy-Item|Move-Item|git\s+(?:commit|checkout|apply|reset)|npm\s+install|pnpm\s+install|bun\s+install)\b/i.test(normalized)) return false
+  if (/[>]\s*(?:[>&]|[A-Za-z0-9_.\\/-])/u.test(normalized)) return false
+  return /^(?:Get-Content|Get-ChildItem|cat|type|ls|dir)(?:\s|$)/i.test(normalized)
+}
+
 /** Canonicalize a test command for memoization so cosmetic flag differences
  * (`| Select-Object -First N`, `2>&1`, trailing whitespace) still hit the cache. */
 export function normalizeTestCommand(command: string): string {

@@ -57,14 +57,11 @@ describe("stress: rapid TUI-style persistence", () => {
 
   it("tool-loop context guard throws a clear error instead of hanging on overflow", async () => {
     const root = mkdtempSync(join(tmpdir(), "nimbl-stress-overflow-"))
-    let guardError: Error | undefined
+    let guardPromise: Promise<unknown> | undefined
     streamText.mockImplementationOnce((config: any) => {
-      // Invoke the guard directly: a huge dynamic payload over the window throws.
-      try {
-        config.prepareStep({ messages: [], instructions: "y".repeat(500_000) })
-      } catch (error) {
-        guardError = error as Error
-      }
+      // Invoke the async guard directly and await it below so an intentional
+      // overflow does not become an unhandled rejection between tests.
+      guardPromise = config.prepareStep({ messages: [], instructions: "y".repeat(500_000) })
       return {
         fullStream: { async *[Symbol.asyncIterator]() { yield { type: "text-delta", text: "ok" } } },
         usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
@@ -81,7 +78,7 @@ describe("stress: rapid TUI-style persistence", () => {
       onEvent: () => {},
       requestApproval: async () => "once",
     })
-    expect(guardError?.message).toMatch(/context reached|window/)
+    await expect(guardPromise).rejects.toThrow(/context reached|window/)
     expect(result.text).toBe("ok")
   })
 

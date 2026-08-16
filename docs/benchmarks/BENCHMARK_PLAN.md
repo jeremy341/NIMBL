@@ -50,7 +50,7 @@ We need three layers, from cheap/fast to expensive/defensible.
 ### Layer C — Cross-harness comparison vs opencode (implemented, P3-03)
 `bun benchmarks/compare-run.ts` — same corpus, same verifiers, same model:
 - NIMBL live run vs `opencode run --format json --auto` run
-- opencode token usage parsed from its `step_finish` events (input/output/cache/cost)
+- opencode token usage parsed from its `step_finish` events (full input, uncached input, cache-read, output, billed tokens, and cost)
 - **head-to-head per task: solved? tokens? cost? latency?**
 
 ---
@@ -118,13 +118,13 @@ Then compare against opencode. Report table:
 | … | | | | | | | | |
 | **opencode** | – | ✓ | 11k | 130 | 12k | 13.5k | 0.01 | 15s |
 
-**Claim format (P3-03):** "On `deepseek-v4-flash` over NIMBL's 6-task corpus, the `hybrid` configuration solved 6/6 tasks with **X% fewer input tokens** than opencode at equal quality." Only publish if `solved` counts match and raw JSONL + git revision are committed.
+**Claim format (P3-03):** "On `deepseek-v4-flash` over NIMBL's 6-task corpus, the `hybrid` configuration solved 6/6 tasks with **X% fewer billed tokens** than opencode at equal quality." Also publish full-sent tokens and cache-read tokens separately. Only publish if solved counts match and raw JSONL + per-record benchmark metadata are preserved.
 
 > **Tier B update (2026-08-15):** the 150-file generated corpus (25 tasks × 3 samples, same
 > netic model) initially did **not** reproduce these savings (run-1 baseline: NIMBL hybrid solved
 > 68/75 at ~20% more tokens; opencode solved 75/75). After the root-cause fixes, the final
 > run-6/7 (tag `1786808124244` + `1786811591640`) **did** reproduce savings: NIMBL solved 67–69/75
-> (89–92%) vs opencode 75/75, at **40–44% fewer tokens per solved task** (26.2–28.0k vs 46.8k) and
+> (89–92%) vs opencode 75/75. The old 40–44% token statement used mismatched cache accounting; use the corrected billed/full columns in `TIER_B_FINAL_RESULTS.md`.
 > ~38% lower latency. See [docs/benchmarks/TIER_B_FINAL_RESULTS.md](./TIER_B_FINAL_RESULTS.md) for the
 > per-task/category tables, the shell-mismatch / analysis-paralysis / delegation-overhead root
 > causes, and the actionable fixes (shell-hint in the bash tool description, verify-after-edit

@@ -70,10 +70,10 @@ Hard 8–12 step cap; no retry on step-cap; audit loop; no delegation on separab
 | Benchmark: frontier agents need explicit reasoning + parallel tool use long-horizon | **DeepPlanning** | [2601.18137](https://arxiv.org/abs/2601.18137) | — validation | — |
 
 ### Candidate implementations
-- [ ] **Turn-allocation by task class** — lexical/symbol classifier → `{retrieval:8, single-fix:12, multi-file:40, long-horizon:100}` steps + retrieval budget. Zero extra LLM calls. *(see §9 idea #1)*
-- [ ] **Retry on step-cap** — treat `finishReason: "tool-calls"` at the cap as retryable, appending a one-line reflection ("you ran out of steps mid-fix; finish now").
-- [ ] **Enforce read-to-edit budget** — after N read-only calls with no edit, `read`/`glob`/`grep` return a directive instead of content (ToolGate-style hard gate).
-- [ ] **Verify-gated edits** — every `edit` must be followed by a `bash` verify within 2 steps or the loop is flagged.
+- [x] **Turn-allocation by task class** — lexical/symbol classifier → `{retrieval:8, single-fix:12, multi-file:40, long-horizon:100}` steps + retrieval budget. Zero extra LLM calls. *(see §9 idea #1)* ✅ Sprint C
+- [x] **Retry on step-cap** — treat `finishReason: "tool-calls"` at the cap as retryable, appending a one-line reflection ("you ran out of steps mid-fix; finish now"). ✅
+- [x] **Enforce read-to-edit budget** — after N read-only calls with no edit, `read`/`glob`/`grep` return a directive instead of content (ToolGate-style hard gate). ✅ (read gate at `readBudget=8` in build mode)
+- [x] **Verify-gated edits** — every `edit` must be followed by a `bash` verify within 2 steps or the loop is flagged. ✅ (soft verify-nudge + batch-verify guidance)
 - [ ] **Milestone checkpointing** — after every edit, run the verify command; two consecutive failed verifies → stop & reflect (Reflexion), don't burn the budget.
 - [ ] **Delegation by bug count** — for N-independent-bug tasks, spawn N subagents with per-bug budgets + merge step; scale child `maxToolSteps: 8` cap.
 
@@ -232,23 +232,25 @@ Hard 8–12 step cap; no retry on step-cap; audit loop; no delegation on separab
 > Ideas synthesized from the research, not from any single paper. Mark each with `[x]` when
 > implemented, and record measured impact.
 
-- [ ] **#1 Task-class turn allocator** — lexical/symbol classifier → task family
+- [x] **#1 Task-class turn allocator** — lexical/symbol classifier → task family
   `{retrieval, single-fix, multi-file, long-horizon}` → allocates `maxToolSteps` + retrieval
-  budget. Free (no LLM), fixes the 8-step cap only where needed.
+  budget. Free (no LLM), fixes the 8-step cap only where needed. ✅ Sprint C (`task-classifier.ts`).
 - [ ] **#2 Plan-first escalation** — when classifier says `long-horizon`, auto-run the existing
   `plan` agent mode → hand its todo list to `build`. Reuses existing code.
-- [ ] **#3 Verify-gated edits** — every `edit` requires a `bash` verify within 2 steps or the
+- [x] **#3 Verify-gated edits** — every `edit` requires a `bash` verify within 2 steps or the
   loop is flagged. Encodes the solved-run pattern (solved `sh-hidden-green`: 18 edits + 14
-  bash; failed: 3 edits + 5 bash).
+  bash; failed: 3 edits + 5 bash). ✅ soft verify-nudge in the read gate + batch-verify guidance.
 - [ ] **#4 Delegation by bug count** — N independent bugs → N subagents with per-bug budgets +
   merge step; scale the child `maxToolSteps: 8` cap.
 - [ ] **#5 Retrieval-budget widening on graph scatter** — widen graph expansion when top
   retrieval matches are scattered (RLM-on-KG); stay lexical when concentrated. Free.
-- [ ] **#6 Leakage-aware learn mode** — "did the tutor reveal the answer" scorer on existing
-  `question`/`learn` tools.
-- [ ] **#7 Read-cache** — per-session file-hash cache; unchanged files return a stub.
-- [ ] **#8 Step-cap retry with reflection** — `finishReason: "tool-calls"` at cap → retry with a
-  one-line reflection; converts dead attempts into second chances.
+- [x] **#6 Leakage-aware learn mode** — "did the tutor reveal the answer" scorer on existing
+  `question`/`learn` tools. ✅ `leakageScore`/`leakageLabel` in learn mode.
+- [x] ~~**#7 Read-cache**~~ — per-session file-hash cache; unchanged files return a stub.
+  **TESTED, FAILED (TIER-E); removed.** ❌ Do not re-implement as a stub.
+- [x] **#8 Step-cap retry with reflection** — `finishReason: "tool-calls"` at cap → retry with a
+  one-line reflection; converts dead attempts into second chances. ✅ continuation re-arms with
+  changed-file context (`MAX_CONTINUATIONS=3`).
 - [ ] **#9 Cache-prefix-contiguous compaction** — fold compaction into the stable system prefix.
 - [ ] **#10 Compact tool schemas** — TSCG-style structured text instead of full JSON per step.
 

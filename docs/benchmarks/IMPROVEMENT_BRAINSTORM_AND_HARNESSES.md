@@ -69,10 +69,10 @@ the same `lh-fix-all` task.)
 | Benchmark: frontier agents need explicit reasoning + parallel tool use long-horizon | **DeepPlanning** | [2601.18137](https://arxiv.org/abs/2601.18137) | — validation | — |
 
 ### Candidate implementations
-- [ ] **Turn-allocation by task class** — lexical/symbol classifier → `{retrieval:8, single-fix:12, multi-file:40, long-horizon:100}` steps + retrieval budget. Zero extra LLM calls.
-- [ ] **Retry on step-cap** — treat `finishReason: "tool-calls"` at the cap as retryable, appending a one-line reflection ("you ran out of steps mid-fix; finish now").
-- [ ] **Enforce read-to-edit budget** — after N read-only calls with no edit, `read`/`glob`/`grep` return a directive instead of content (ToolGate-style hard gate).
-- [ ] **Verify-gated edits** — every `edit` must be followed by a `bash` verify within 2 steps or the loop is flagged.
+- [x] **Turn-allocation by task class** — lexical/symbol classifier → `{retrieval:8, single-fix:12, multi-file:40, long-horizon:100}` steps + retrieval budget. Zero extra LLM calls. ✅ Sprint C
+- [x] **Retry on step-cap** — treat `finishReason: "tool-calls"` at the cap as retryable, appending a one-line reflection ("you ran out of steps mid-fix; finish now"). ✅
+- [x] **Enforce read-to-edit budget** — after N read-only calls with no edit, `read`/`glob`/`grep` return a directive instead of content (ToolGate-style hard gate). ✅ (read gate at `readBudget=8` in build mode)
+- [x] **Verify-gated edits** — every `edit` must be followed by a `bash` verify within 2 steps or the loop is flagged. ✅ (soft verify-nudge + batch-verify guidance)
 - [ ] **Milestone checkpointing** — after every edit, run the verify command; two consecutive failed verifies → stop & reflect (Reflexion), don't burn the budget.
 - [ ] **Delegation by bug count** — for N-independent-bug tasks, spawn N subagents with per-bug budgets + merge step; scale child `maxToolSteps: 8` cap.
 
@@ -231,23 +231,24 @@ the same `lh-fix-all` task.)
 > Ideas synthesized from the research, not from any single paper. Mark each with `[x]` when
 > implemented, and record measured impact.
 
-- [ ] **#1 Task-class turn allocator** — lexical/symbol classifier → task family
+- [x] **#1 Task-class turn allocator** — lexical/symbol classifier → task family
   `{retrieval, single-fix, multi-file, long-horizon}` → allocates `maxToolSteps` + retrieval
-  budget. Free (no LLM), fixes the 8-step cap only where needed.
+  budget. Free (no LLM), fixes the 8-step cap only where needed. ✅ Sprint C
 - [ ] **#2 Plan-first escalation** — when classifier says `long-horizon`, auto-run the existing
   `plan` agent mode → hand its todo list to `build`. Reuses existing code.
-- [ ] **#3 Verify-gated edits** — every `edit` requires a `bash` verify within 2 steps or the
+- [x] **#3 Verify-gated edits** — every `edit` requires a `bash` verify within 2 steps or the
   loop is flagged. Encodes the solved-run pattern (solved `sh-hidden-green`: 18 edits + 14
-  bash; failed: 3 edits + 5 bash).
+  bash; failed: 3 edits + 5 bash). ✅ soft verify-nudge + batch-verify guidance
 - [ ] **#4 Delegation by bug count** — N independent bugs → N subagents with per-bug budgets +
   merge step; scale the child `maxToolSteps: 8` cap.
 - [ ] **#5 Retrieval-budget widening on graph scatter** — widen graph expansion when top
   retrieval matches are scattered (RLM-on-KG); stay lexical when concentrated. Free.
-- [ ] **#6 Leakage-aware learn mode** — "did the tutor reveal the answer" scorer on existing
-  `question`/`learn` tools.
-- [ ] **#7 Read-cache** — per-session file-hash cache; unchanged files return a stub.
-- [ ] **#8 Step-cap retry with reflection** — `finishReason: "tool-calls"` at cap → retry with a
-  one-line reflection; converts dead attempts into second chances.
+- [x] **#6 Leakage-aware learn mode** — "did the tutor reveal the answer" scorer on existing
+  `question`/`learn` tools. ✅ `leakageScore`/`leakageLabel`
+- [x] ~~**#7 Read-cache**~~ — per-session file-hash cache; unchanged files return a stub.
+  **TESTED, FAILED (TIER-E); removed.** ❌ Do not re-implement as a stub.
+- [x] **#8 Step-cap retry with reflection** — `finishReason: "tool-calls"` at cap → retry with a
+  one-line reflection; converts dead attempts into second chances. ✅ continuation with changed-file context
 - [ ] **#9 Cache-prefix-contiguous compaction** — fold compaction into the stable system prefix.
 - [ ] **#10 Compact tool schemas** — TSCG-style structured text instead of full JSON per step.
 
@@ -493,41 +494,41 @@ cheap, proven step-budget/compaction fixes that eliminate its one fatal weakness
 > Every item names its paper(s) (P) and the harness(es) (H) that prove it works.
 
 ### A. Fix the 8-step bug (Phase 1)
-| # | Borrow | Paper | Harness |
-|---|---|---|---|
-| A1 | **Step-cap retry + graceful handoff** — on `finishReason:"tool-calls"` at cap, append a "summarize done / remaining / next" prompt and retry once with reflection | Reflexion [2303.11366], TrACE [2604.08369] | opencode `MAX_STEPS_PROMPT`, Hermes 500/50 |
-| A2 | **Decouple attempts from steps** — transient 429/5xx/timeout retries must not consume the 8-step budget | — | Kimi `max_attempts_per_step`, opencode retry policy |
-| A3 | **Subagent budget inheritance + schema-validated returns** — `delegate` spawns children with own budget; child returns JSON `{done, blocked, decisions, files}` | CodeAgents [2507.03254] | Hermes 500/50, oh-my-pi worktree yields, Cline research subagents |
-| A4 | **Read-only exploration subagent** — cheap subagent maps repo, returns top file paths + line ranges (kills 82-reads/0-edits loop) | FastContext [2606.14066] | Cline, FastContext |
-| A5 | **Graceful step exhaustion instead of silent failure** — text-only handoff at cap | — | opencode `MAX_STEPS_PROMPT` |
+| # | Borrow | Paper | Harness | Status |
+|---|---|---|---|---|
+| A1 | **Step-cap retry + graceful handoff** — on `finishReason:"tool-calls"` at cap, append a "summarize done / remaining / next" prompt and retry once with reflection | Reflexion [2303.11366], TrACE [2604.08369] | opencode `MAX_STEPS_PROMPT`, Hermes 500/50 | ✅ |
+| A2 | **Decouple attempts from steps** — transient 429/5xx/timeout retries must not consume the 8-step budget | — | Kimi `max_attempts_per_step`, opencode retry policy | ✅ |
+| A3 | **Subagent budget inheritance + schema-validated returns** — `delegate` spawns children with own budget; child returns JSON `{done, blocked, decisions, files}` | CodeAgents [2507.03254] | Hermes 500/50, oh-my-pi worktree yields, Cline research subagents | ⬜ |
+| A4 | **Read-only exploration subagent** — cheap subagent maps repo, returns top file paths + line ranges (kills 82-reads/0-edits loop) | FastContext [2606.14066] | Cline, FastContext | ⬜ |
+| A5 | **Graceful step exhaustion instead of silent failure** — text-only handoff at cap | — | opencode `MAX_STEPS_PROMPT` | ✅ |
 
 ### B. Defend the −40% token claim (Phase 2)
-| # | Borrow | Paper | Harness |
-|---|---|---|---|
-| B1 | **Hashline/hash-anchored edits** — model points at content-hash anchors; stale anchors rejected before corrupting; −61% output tokens | — | oh-my-pi |
-| B2 | **Free tool-result pruning pass** — stub old tool outputs >200 chars with a marker, no LLM call | — | Hermes (phase 1), opencode PRUNE |
-| B3 | **ACI discipline on tool outputs** — 100-line bounded viewer, filename-only grep, empty-output sentinel | — | SWE-agent |
-| B4 | **CompactionEntry as first-class session record** — `summary` + `firstKeptEntryId` + cumulative file lists + usage; never cut at tool results; iterative updates | TokenPilot [2606.17016] | Pi, Hermes |
-| B5 | **`max_input_size` vs window** — compaction off the usable input tier | — | Kimi, MiMo |
-| B6 | **No-history-rewrite + 10K fragment caps** — keep prompt-cache prefix stable; flag >10K items | CAPC [2607.15516], Don't Break the Cache [2601.06007] | Codex |
+| # | Borrow | Paper | Harness | Status |
+|---|---|---|---|---|
+| B1 | **Hashline/hash-anchored edits** — model points at content-hash anchors; stale anchors rejected before corrupting; −61% output tokens | — | oh-my-pi | ⬜ |
+| B2 | **Free tool-result pruning pass** — stub old tool outputs >200 chars with a marker, no LLM call | — | Hermes (phase 1), opencode PRUNE | ✅ (per-step pruning + cache-prefix boundary guard) |
+| B3 | **ACI discipline on tool outputs** — 100-line bounded viewer, filename-only grep, empty-output sentinel | — | SWE-agent | ✅ (120-line read page + `full:true`; filename-only grep ⬜) |
+| B4 | **CompactionEntry as first-class session record** — `summary` + `firstKeptEntryId` + cumulative file lists + usage; never cut at tool results; iterative updates | TokenPilot [2606.17016] | Pi, Hermes | 🟡 (structured compaction exists; prefix-boundary guard live) |
+| B5 | **`max_input_size` vs window** — compaction off the usable input tier | — | Kimi, MiMo | ⬜ |
+| B6 | **No-history-rewrite + 10K fragment caps** — keep prompt-cache prefix stable; flag >10K items | CAPC [2607.15516], Don't Break the Cache [2601.06007] | Codex | 🟡 (dynamic retrieval at the tail; per-step pruning preserves prefix) |
 
 ### C. Efficiency (Phase 3)
-| # | Borrow | Paper | Harness |
-|---|---|---|---|
-| C1 | **Cache keepalive pings** — keep cached prefix warm between turns | — | Aider |
-| C2 | **Per-role model routing** — cheap model for compaction/summaries/subagents | Local-Splitter [2604.12301], SpeedupLLM [2505.20643] | Continue, Kimi, oh-my-pi |
-| C3 | **System-message tools** — tool loop on weak/local models without native tool-calling | — | Continue |
-| C4 | **BM25 skill selection** — load only relevant skill text | — | MiMo |
-| C5 | **Query-aware sentence excerpt pruning** | LLMLingua-2 [2403.12968], CPC [2409.01227], DAC [2507.11942] | — |
+| # | Borrow | Paper | Harness | Status |
+|---|---|---|---|---|
+| C1 | **Cache keepalive pings** — keep cached prefix warm between turns | — | Aider | ⬜ |
+| C2 | **Per-role model routing** — cheap model for compaction/summaries/subagents | Local-Splitter [2604.12301], SpeedupLLM [2505.20643] | Continue, Kimi, oh-my-pi | ⬜ |
+| C3 | **System-message tools** — tool loop on weak/local models without native tool-calling | — | Continue | ⬜ |
+| C4 | **BM25 skill selection** — load only relevant skill text | — | MiMo | ✅ (`selectRelevantSkills`) |
+| C5 | **Query-aware sentence excerpt pruning** | LLMLingua-2 [2403.12968], CPC [2409.01227], DAC [2507.11942] | — | ⬜ |
 
 ### D. Intelligence (Phase 4)
-| # | Borrow | Paper | Harness |
-|---|---|---|---|
-| D1 | **Checkpoint/restore** — shadow-git snapshot of files + conversation + pending tool call before mutating tools | — | Gemini, Cline |
-| D2 | **Inline security-risk self-labeling** — tool schemas require LOW/MED/HIGH label; zero extra LLM calls | — | OpenHands |
-| D3 | **Error-as-observation resilience** — feed tool errors back to the model as observations | Reflexion [2303.11366] | Goose |
-| D4 | **Iterative structured summaries for teaching** — Socratic/learn mode teaches *from* subagent summaries + compaction entries | — | Hermes, oh-my-pi, Pi |
-| D5 | **Persistent project memory** — SQLite FTS5 memory injected on resume | MemCoder [2603.13258] | MiMo |
+| # | Borrow | Paper | Harness | Status |
+|---|---|---|---|---|
+| D1 | **Checkpoint/restore** — shadow-git snapshot of files + conversation + pending tool call before mutating tools | — | Gemini, Cline | ⬜ |
+| D2 | **Inline security-risk self-labeling** — tool schemas require LOW/MED/HIGH label; zero extra LLM calls | — | OpenHands | ⬜ |
+| D3 | **Error-as-observation resilience** — feed tool errors back to the model as observations | Reflexion [2303.11366] | Goose | ✅ (existing tool pattern) |
+| D4 | **Iterative structured summaries for teaching** — Socratic/learn mode teaches *from* subagent summaries + compaction entries | — | Hermes, oh-my-pi, Pi | ⬜ |
+| D5 | **Persistent project memory** — SQLite FTS5 memory injected on resume | MemCoder [2603.13258] | MiMo | ⬜ |
 
 ---
 
@@ -535,23 +536,25 @@ cheap, proven step-budget/compaction fixes that eliminate its one fatal weakness
 
 > Ordered by ROI: fix bugs first, then defend tokens, then cheap wins, then intelligence.
 
-### Phase 1 — fix the 8-step bug (highest ROI, smallest code)
-- Task-class turn allocator (#1)
-- Step-cap retry with reflection (#8 / A1)
-- Decouple attempts from steps (A2)
-- Hard read-to-edit gate (enforce, don't advise)
-- Verify-gated edits (#3)
+### Phase 1 — fix the 8-step bug (highest ROI, smallest code) ✅
+- ✅ Task-class turn allocator (#1)
+- ✅ Step-cap retry with reflection (#8 / A1)
+- ✅ Decouple attempts from steps (A2) *(Sprint C.4: `executedToolSteps` counts only tool-call parts)*
+- ✅ Hard read-to-edit gate (enforce, don't advise)
+- ✅ Verify-gated edits (#3) *(soft verify-nudge)*
 
 **Expected:** `lh-fix-all` 0/12 → ~8–12/12; `sh-hidden-green` +~3; `mf-quote-margin` +~2.
 **Files:** `agent.ts`, `agent-config.ts`, `agent-benchmark.ts`.
+**Measured (2026-08-16 300-run):** `lh-fix-all` **12/12** at 177,924 billed (‑3.3% vs opencode);
+`sh-hidden-green` 12/12; `mf-quote-margin` 12/12. ✅
 
 ### Phase 2 — token defense (keeps −40%)
-- Read-cache (#7)
-- Tool-output gating (ContextSniper-style / B3)
-- Hash-anchored edits (B1)
-- Free tool-result pruning (B2)
-- Cache-prefix-contiguous compaction (#9 / B4)
-- Compact tool schemas (#10)
+- ❌ ~~Read-cache (#7)~~ — tested, failed (TIER-E); removed
+- ✅ Tool-output gating (ContextSniper-style / B3) *(120-line default read page + `full:true`)*
+- ⬜ Hash-anchored edits (B1)
+- ✅ Free tool-result pruning (B2) *(per-step `pruneOldToolResults` + cache-prefix boundary guard)*
+- ⬜ Cache-prefix-contiguous compaction (#9 / B4)
+- ⬜ Compact tool schemas (#10)
 
 ### Phase 3 — efficiency (cheap wins)
 - Extractive-default compression

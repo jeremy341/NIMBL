@@ -50,13 +50,14 @@ console.log(`corpusRoot: ${corpusRoot}`)
 console.log("== Running NIMBL agent benchmark ==")
 console.log(`concurrency: ${concurrency} (set NIMBL_BENCH_CONCURRENCY to override)`)
 const nimblRuns = await runAgentBenchmark({ corpusRoot, seed, samples, live, modes: nimblModes, taskIds: taskIds.length ? taskIds : undefined, concurrency, requestsPerMinute: process.env.NIMBL_BENCH_REQ_PER_MIN ? Number(process.env.NIMBL_BENCH_REQ_PER_MIN) : undefined })
+const persistedNimblRuns = nimblRuns.map((run) => ({ ...run, benchmarkMetadata: meta }))
 const nimblRecordsFile = join(resultsDir, `agent-benchmark-${seed}-s${samples}${live ? "-live" : ""}-${runTag}.jsonl`)
-appendBenchmarkRecords(nimblRecordsFile, nimblRuns as AgentBenchmarkRun[])
+appendBenchmarkRecords(nimblRecordsFile, persistedNimblRuns as AgentBenchmarkRun[])
 // Write every NIMBL run as its own raw file (full event stream included).
 for (const run of nimblRuns) {
   const telemetry = (run.telemetry || {}) as Record<string, unknown>
   const rawEvents = Array.isArray(telemetry.rawEvents) ? telemetry.rawEvents : []
-  writeFileSync(join(rawNimblRoot, `${run.taskId}-${run.mode}-s${run.seed}.json`), JSON.stringify({ ...run, telemetry: { ...telemetry, rawEvents } }, null, 2), "utf8")
+  writeFileSync(join(rawNimblRoot, `${run.taskId}-${run.mode}-s${run.seed}.json`), JSON.stringify({ ...run, benchmarkMetadata: meta, telemetry: { ...telemetry, rawEvents } }, null, 2), "utf8")
 }
 
 console.log("== Running opencode benchmark ==")
@@ -64,7 +65,8 @@ console.log(`opencode model: ${opencodeModel} (set OPENCODE_BENCH_MODEL to overr
 const opencodeRuns = await runOpencodeBenchmark({
   corpusRoot, seed, samples, model: opencodeModel, taskIds: taskIds.length ? taskIds : undefined, customProvider, concurrency,
 })
-appendBenchmarkRecords(join(resultsDir, `opencode-benchmark-${seed}-s${samples}-${runTag}.jsonl`), opencodeRuns)
+const persistedOpencodeRuns = opencodeRuns.map((run) => ({ ...run, benchmarkMetadata: meta }))
+appendBenchmarkRecords(join(resultsDir, `opencode-benchmark-${seed}-s${samples}-${runTag}.jsonl`), persistedOpencodeRuns)
 
 // Raw opencode event stream + per-run JSON. The runner preserved every event
 // line verbatim in telemetry.rawEvents, so nothing is summarized or filtered.
@@ -73,7 +75,7 @@ for (const run of opencodeRuns) {
   const rawEvents = Array.isArray(telemetry.rawEvents) ? telemetry.rawEvents : []
   const rawStreamName = `${run.taskId}-opencode-s${run.seed}.jsonl`
   writeFileSync(join(rawOpenCodeRoot, rawStreamName), rawEvents.join("\n") + "\n", "utf8")
-  writeFileSync(join(rawOpenCodeRoot, `${run.taskId}-opencode-s${run.seed}.json`), JSON.stringify({ ...run, telemetry: { ...telemetry, rawEvents } }, null, 2), "utf8")
+  writeFileSync(join(rawOpenCodeRoot, `${run.taskId}-opencode-s${run.seed}.json`), JSON.stringify({ ...run, benchmarkMetadata: meta, telemetry: { ...telemetry, rawEvents } }, null, 2), "utf8")
 }
 
 const nimblByMode = summarizeAgentBenchmarkModes(nimblRuns)
@@ -81,6 +83,7 @@ const nimblByFamily = summarizeAgentBenchmarkFamilies(nimblRuns)
 const opencodeSolved = opencodeRuns.filter((run) => run.solved).length
 const opencodeTotal = opencodeRuns.length
 const ocTokens = opencodeRuns.reduce((sum, run) => sum + run.totalTokens, 0)
+const ocBilledTokens = opencodeRuns.reduce((sum, run) => sum + run.billedTokens, 0)
 const ocCost = opencodeRuns.reduce((sum, run) => sum + run.referenceCostUsd, 0)
 
 const headToHead = {
@@ -90,16 +93,16 @@ const headToHead = {
   samples,
   nimblByMode,
   nimblByFamily,
-  opencode: { solved: opencodeSolved, total: opencodeTotal, totalTokens: ocTokens, referenceCostUsd: ocCost, runs: opencodeRuns },
+  opencode: { solved: opencodeSolved, total: opencodeTotal, totalTokens: ocTokens, billedTokens: ocBilledTokens, referenceCostUsd: ocCost, runs: opencodeRuns },
   nimblRuns,
 }
 writeFileSync(join(resultsDir, `head-to-head-${runTag}.json`), JSON.stringify(headToHead, null, 2), "utf8")
 console.log(`Raw results written to:\n  ${rawNimblRoot}\n  ${rawOpenCodeRoot}\n  ${nimblRecordsFile}\n  head-to-head-${runTag}.json`)
-console.log(JSON.stringify({ meta, nimblByMode, nimblByFamily, opencode: { solved: opencodeSolved, total: opencodeTotal, totalTokens: ocTokens, referenceCostUsd: ocCost } }, null, 2))
+console.log(JSON.stringify({ meta, nimblByMode, nimblByFamily, opencode: { solved: opencodeSolved, total: opencodeTotal, totalTokens: ocTokens, billedTokens: ocBilledTokens, referenceCostUsd: ocCost } }, null, 2))
 console.log("\n=== Per-family (Sprint C per-class budgets) ===")
 for (const family of Object.keys(nimblByFamily)) {
   const f = nimblByFamily[family]!
-  console.log(`  ${family}: solved=${f.solved}/${f.total} avgTokens=${Math.round(f.totalTokens.mean)} avgSteps=${Math.round(f.toolSteps.mean)} budget=${f.maxToolSteps} steps`)
+  console.log(`  ${family}: solved=${f.solved}/${f.total} fullTokens=${Math.round(f.totalTokens.mean)} billedTokens=${Math.round(f.billedTokens.mean)} avgSteps=${Math.round(f.toolSteps.mean)} budget=${f.maxToolSteps} steps`)
 }
 console.log("\n=== Head-to-head (per task) ===")
 const ocByTask = new Map(opencodeRuns.map((run) => [run.taskId, run]))
@@ -109,6 +112,6 @@ for (const mode of nimblModes) {
     if (run.mode !== mode) continue
     const oc = ocByTask.get(run.taskId)
     if (!oc) continue
-    console.log(`  ${run.taskId}: NIMBL(${mode}) solved=${run.solved} tokens=${run.totalTokens} cacheRead=${run.cacheReadTokens} | opencode solved=${oc.solved} tokens=${oc.totalTokens}`)
+    console.log(`  ${run.taskId}: NIMBL(${mode}) solved=${run.solved} full=${run.totalTokens} billed=${run.billedTokens} cacheRead=${run.cacheReadTokens} | opencode solved=${oc.solved} full=${oc.totalTokens} billed=${oc.billedTokens}`)
   }
 }

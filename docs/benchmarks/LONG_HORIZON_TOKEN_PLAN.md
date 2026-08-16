@@ -1,7 +1,8 @@
 # Long-Horizon & Shell-Loop Token Reduction — Research-Backed Plan
 
-**Date:** 2026-08-16 · **Status:** approved for staged implementation
-**Problem:** NIMBL spends **~2x opencode's token budget** on long-horizon / shell-loop tasks (lh-fix-all 291k vs 184k, sh-hidden-green 195k vs 115k, sh-suite-green 217k vs 152k). All arXiv IDs below were verified live during research.
+**Date:** 2026-08-16 · **Status:** approved for staged implementation; corrected set MEASURED (2026-08-16 300-run)
+**Accounting note:** historical opencode totals excluded cache-read input while NIMBL totals included it. The old `~2x opencode token budget` statement is not an apples-to-apples cost comparison. Use full-sent tokens for context volume and billed tokens/provider cost for economic comparisons.
+**Problem:** NIMBL still spends too many tool steps and uncached tokens on long-horizon / shell-loop tasks, especially `lh-fix-all`. TIER-F v2's corrected billed gap is approximately 216k versus opencode's 184k, while its full-sent total is 541k.
 
 ---
 
@@ -10,7 +11,7 @@
 | Lever | NIMBL | opencode | Why it matters |
 |---|---|---|---|
 | **Steps** | 115.2 / 90.2 / 87.5 | 87.7 / 73.3 / 75.7 | Each step re-sends the whole history; step count is the #1 cost driver |
-| **Cache hit** | **39-57%** | ~90%+ | History mutates mid-run (pruning, trimming) -> provider prefix cache invalidated -> every step re-bills full input. **The single biggest lever.** |
+| **Cache hit** | **39-64%** | ~77% in the reviewed adapter | Metrics are now separated: opencode's cache share is computed over its separately reported cache-read input; compare billed cost and full-sent volume independently. |
 | **Reads/run** | 40-60 | low | Audit-loop re-reads of unchanged files |
 | **Test runs** | 20-28 `bun test` | fewer | Full-suite re-runs with raw output (avg 2.3k chars each) |
 | **Mid-task condensation** | none (grows to window, then hard-trims = cache kill) | opencode prune + compaction agent | Rolling condensation keeps context bounded AND cache-stable |
@@ -70,6 +71,13 @@ Bash output is already capped at 12k chars — **not** the main problem. The gap
 Rationale: (1) attribution — bundling many changes makes a regression impossible to debug; (2) risk — condensation/phase-loop/subagents rewrite loop semantics or need cheap-model routing; (3) new-tool adoption — a brand-new tool needs its own validation pass.
 
 > **RESULT (TIER-E): the 4-fix set as first built FAILED — tokens +79%, cost +83%.** Full post-run analysis and the corrected state are in `TIER_E_RESULTS.md` §9. The original implementation plan below is kept only as history; **current code = per-step pruning (restored) + file-path-preserving test summarizer + test memoization; read-cache removed.**
+>
+> **RESULT (2026-08-16, safe-fixes 300-run): the corrected set is measured at full scale.**
+> `lh-fix-all` **12/12 at 177,924 billed tokens** vs opencode 183,943 (‑3.3%), sending 584,644 full
+> tokens vs 1,092,615 (**‑46.5%**). `sh-suite-green` 12/12 at 64,048 billed (‑57.9%),
+> `sh-hidden-green` 12/12 at 99,694 (‑13.5%), `lh-forced-context-rename` 12/12 at 16,787 (‑63.0%).
+> Test memoization was upgraded to **content-hash invalidation** (`NIMBL_TEST_CACHE_HASH=1`):
+> cached verdicts survive edits to unrelated files because they key on the changed-file set's hash.
 
 **What was originally planned (historical):**
 
@@ -78,9 +86,14 @@ Rationale: (1) attribution — bundling many changes makes a regression impossib
 3. **T0.2 test memoization** — **kept** (neutral, fired 9x).
 4. ~~**T1.1 one-shot prune**~~ — **FAILED/reverted** to per-step pruning (one-shot let lh-fix-all history grow to 6,154 tokens/step).
 
-**Deferred to separate runs:** T1.2 rolling condensation, T2.1 phase-gated loop, T2.2 bounded reflection, T2.3 plan-first, T2.4 drift monitor, T3.1/T3.2 subagents.
+**Deferred to separate runs:** T1.2 rolling condensation, T2.1 phase-gated loop, T2.2 bounded reflection, T2.3 plan-first, T2.4 drift monitor, T3.1/T3.2 subagents. 🟡 T0.5 (test-command discipline in the shell hint) is live, as are the batch-verification rewrites of the shell-loop / long-horizon / multi-file classifier guidance.
 
 **Next benchmark requirement:** a fresh full 300-run run of the corrected set (per-step pruning + fixed summarizer, no read-cache) to supersede TIER-E. Target: TIER-D solves (288+) at TIER-D-or-better tokens, then the T1.2/T0.3 levers to get under opencode.
+
+> ✅ **MET (2026-08-16):** the safe-fixes 300-run superseded TIER-E (298/300, 0 zeroed, billed
+> **‑54.4%** vs opencode; full **‑58.2%**). With `lh-fix-all` already under opencode's billed cost,
+> the remaining levers for the cost tail are T1.2 (rolling condensation) and T0.3 (diff-scoped test
+> selection) — the aggregate is already below opencode, so those are tail-polish, not blockers.
 
 ---
 

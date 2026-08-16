@@ -34,6 +34,7 @@ Verified: typecheck clean, 36 focused tests pass, 300/301 full-suite (pre-existi
 | Zeroed (doom-loop on identical reads) | 10/300 (3.3%) | **7/300 (2.3%)** | **-3** |
 | Hard API/rate-limit failures | 0 | **0** | = |
 | Avg tokens / usable run | 40,992 | **73,451** | **+79% (regression)** |
+| Token basis | full input including cache-read | full input including cache-read | comparable within NIMBL |
 | Avg tool steps / usable run | 17.9 | 24.1 | +6.2 |
 | Avg latency | 35 s | **30 s** | **-5 s** |
 | Runtime | 28 min | **21 min** | **-7 min** |

@@ -419,7 +419,7 @@ describe("agent execution", () => {
     expect(result.text).toContain("rejected access")
   })
 
-  it("asks the user before continuing past a repeated tool call", async () => {
+  it("soft-nudges repeated grep calls without asking the user", async () => {
     const root = mkdtempSync(join(tmpdir(), "nimbl-agent-doom-"))
     const requestApproval = vi.fn(async () => "once" as const)
     const taskEvents: string[] = []
@@ -450,7 +450,7 @@ describe("agent execution", () => {
       doomLoopThreshold: 2,
     })
 
-    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ tool: "doom_loop", target: "grep" }))
+    expect(requestApproval).not.toHaveBeenCalledWith(expect.objectContaining({ tool: "doom_loop", target: "grep" }))
     expect(result.text).toContain("done")
   })
 
@@ -485,10 +485,10 @@ describe("agent execution", () => {
 
     // Approval must let the run continue (previously it hard-stopped one call later).
     expect(result.text).toContain("done")
-    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ tool: "doom_loop", target: "grep" }))
+    expect(requestApproval).not.toHaveBeenCalledWith(expect.objectContaining({ tool: "doom_loop", target: "grep" }))
   })
 
-  it("stops after a repeated tool call when the user does not approve", async () => {
+  it("does not terminate the run when repeated grep calls are rejected by policy", async () => {
     const root = mkdtempSync(join(tmpdir(), "nimbl-agent-doomrej-"))
     const requestApproval = vi.fn(async () => "reject" as const)
 
@@ -504,7 +504,7 @@ describe("agent execution", () => {
       usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
     }))
 
-    await expect(runAgent({
+    const result = await runAgent({
       root,
       provider: "openrouter",
       model: "deepseek/deepseek-v4-pro",
@@ -515,7 +515,9 @@ describe("agent execution", () => {
       requestApproval,
       onEvent: () => {},
       doomLoopThreshold: 2,
-    })).rejects.toThrow("rejected continuing after repeated tool calls")
+    })
+    expect(result.text).toContain("done")
+    expect(requestApproval).not.toHaveBeenCalledWith(expect.objectContaining({ tool: "doom_loop", target: "grep" }))
   })
 
   it("hard-rejects a doom loop when permission is deny", async () => {
@@ -534,7 +536,7 @@ describe("agent execution", () => {
       usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
     }))
 
-    await expect(runAgent({
+    const result = await runAgent({
       root,
       provider: "openrouter",
       model: "deepseek/deepseek-v4-pro",
@@ -545,7 +547,8 @@ describe("agent execution", () => {
       requestApproval,
       onEvent: () => {},
       doomLoopThreshold: 2,
-    })).rejects.toThrow("blocked by project policy")
+    })
+    expect(result.text).toContain("done")
     // No approval prompt should be issued when policy is a hard deny.
     expect(requestApproval).not.toHaveBeenCalled()
   })

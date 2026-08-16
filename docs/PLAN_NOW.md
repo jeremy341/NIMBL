@@ -116,6 +116,33 @@ negative (~−25%), but it **must be restated per category**, not as one headlin
 
 ---
 
+## Sprint F — Phase-5 safe fixes (measured 2026-08-16, 300-run)
+
+> Full results: `docs/benchmarks/PHASE_5_TIER_F_FIXES_300_VS_OPENCODE.md`. This sprint proved the
+> Phase-5 measurement + hard-task levers end-to-end. It is a single 300-run sample on a dirty
+> worktree — not yet a release claim.
+
+- [x] **F.1 Accounting + metadata correctness** — `billedTokens`/`totalTokens` normalized on both
+  harnesses; per-record `benchmarkMetadata`; `toolSteps` counts unique terminal tool calls.
+  *(PHASE_5_MASTER_RESEARCH_ROADMAP Phase 0)*
+- [x] **F.2 Scoped tools (opt-in)** — `NIMBL_SCOPED_TOOLS=1` narrows the catalog per classified
+  family and re-classifies per model step (`prepareStep` → `activeTools`). *(B2)*
+- [x] **F.3 Hashed test-cache invalidation (opt-in)** — `NIMBL_TEST_CACHE_HASH=1` keys cached
+  test verdicts on a hash of the changed-file set, so unrelated edits don't evict them. *(T0.2)*
+- [x] **F.4 Repository map (opt-in)** — `NIMBL_REPO_MAP=1` injects a compact structural
+  orientation map (file → symbols@lines) into the system prefix for large repos. *(C5 partial)*
+- [x] **F.5 Read-output gating** — `read` returns a 120-line page by default with `startLine`/
+  `endLine`/`full:true`; read-like Bash commands are soft-counted toward the investigation budget.
+  *(B4 / A2)*
+- [x] **F.6 Read-loop + batch-verify guidance** — doom-loop exempts grep/glob; soft repeated-query
+  nudge; shell hint and classifier guidance rewritten for batch verification.
+
+**Measured (2026-08-16):** 298/300 solved (99.3%), 0 zeroed; billed 21,364/run vs opencode
+46,844 (**−54.4%**); full-sent 82,389 vs 196,918 (**−58.2%**); `lh-fix-all` 12/12 at 177,924
+billed vs opencode 183,943 (**−3.3%**).
+
+---
+
 ## Sprint D — SWE-bench + real benchmarks (after A–C)
 
 > POSIX shell backend is the prerequisite. SWE-bench evaluation wants ~120GB free (we have 63GB)

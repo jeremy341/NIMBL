@@ -1,6 +1,8 @@
-# TIER-D Run vs opencode run-7 (OpenRouter - StreamLake - deepseek-v4-flash-0731)
+# TIER-D Run vs opencode run-7 — Corrected Token Accounting
 
 Head-to-head between the **TIER-D NIMBL full run** (300 runs, zeroed-fix) and the **latest opencode run-7** (75 runs), same tier-b corpus, same model build.
+
+> **Accounting correction:** old NIMBL totals included cache-read input; old opencode totals excluded cache-read input. The old `-12.5%` headline was invalid. This document now separates full-sent and billed-token bases.
 
 - **NIMBL:** `.nimbl/benchmarks/agent-benchmark-20260728-s3-live-1786879459013.jsonl` - live on **OpenRouter**, provider pinned **StreamLake**, model `deepseek/deepseek-v4-flash-0731`, concurrency 8, 180 req/min.
 - **opencode run-7:** `.nimbl/benchmarks/2026-08-15-run6-FINAL-4mode-vs-opencode-1786808124244/opencode-benchmark-20260728-s3-1786811591640.jsonl` - 75 runs on the free netic endpoint, same `deepseek-v4-flash-free` = **0731 build** (confirmed). opencode harness untouched by the NIMBL optimization.
@@ -10,14 +12,14 @@ Head-to-head between the **TIER-D NIMBL full run** (300 runs, zeroed-fix) and th
 
 ## 1. Headline
 
-| Metric | opencode | NIMBL (best mode) | NIMBL (all modes) | delta vs opencode |
+| Metric | opencode billed | opencode full sent | NIMBL billed | NIMBL full sent |
 |---|---|---|---|---|
-| Solved | 75/75 (100%) | 73/75 (none) | **288/300 (96.0%)** | -4.0 pp |
-| Avg tokens / usable run | 46,844 | 36,395 (hybrid) | **40,992** | **-12.5%** |
-| Avg latency | 60.9 s | 34 s (prompt-cache) | **35 s** | **-43%** |
-| Zeroed/errored | 0 | 0 | 10/300 | - |
+| Solved | 75/75 (100%) | 75/75 | **288/300 (96.0%)** | — |
+| Avg tokens / usable run | **46,844** | **196,134** | **15,804 billed** | **40,992 full** |
+| Avg latency | 60.9 s | 60.9 s | **35 s** | — |
+| Zeroed/errored | 0 | 0 | 10/300 | — |
 
-**NIMBL is now ~12.5% more token-efficient than opencode and ~43% faster per run**, with the solve gap down to 4 points - and all 10 remaining zeroed runs are a single known class (identical-read doom-loop).
+**Corrected verdict:** NIMBL sends substantially fewer full tokens and is cheaper on billed tokens for short tasks. On `lh-fix-all`, NIMBL's TIER-D billed value is approximately **183,698** versus opencode's **183,943**, effectively equal. NIMBL remains faster in this endpoint comparison, but solve rates and endpoints are not identical.
 
 > **Update (post-TIER-E):** the read-cache approach for that class was tried and **failed** (see `TIER_E_RESULTS.md` §9); the corrected path is the doom-loop-detector fix and/or targeted-test discipline.
 
@@ -39,7 +41,9 @@ NIMBL beats opencode on **five of seven families** and closed most of the solve 
 
 ---
 
-## 3. Per-task head-to-head (solved/3 opencode vs solved/12 NIMBL; tokens per usable run)
+## 3. Per-task head-to-head (solved/3 opencode vs solved/12 NIMBL)
+
+The historical `OC tok` and `NIMBL tok` columns below are retained as the original full-run record, not as a valid billed-cost comparison. Use the corrected aggregate above and future `billedTokens` fields for economic comparisons.
 
 | task | OC sol | OC tok | NIMBL sol | NIMBL tok | NIMBL st |
 |---|---|---|---|---|---|
@@ -101,7 +105,7 @@ NIMBL's $0.44 total remains a trivial fraction of the $10 OpenRouter credit.
 
 ## 6. Verdict
 
-1. **The zeroed-fix run is the strongest NIMBL result measured:** 288/300 (96%), ~12.5% more token-efficient than opencode, ~43% faster, with the solve-rate gap down to 4 points.
+1. **The zeroed-fix run is the strongest NIMBL result measured:** 288/300 (96%), with corrected billed-token leadership on short tasks and approximately equal billed tokens to opencode on `lh-fix-all`, plus lower latency in this endpoint comparison.
 2. **lh-fix-all closed** (4 -> 9/12) - the fix that unblocked the hardest task. Shell-loop family +5 solves.
 3. **Remaining gap is the 10 identical-read doom-loop deaths.** The originally-planned read-cache (B1) fix was tried in TIER-E and **failed** (stub pushed the model into `bash Get-Content`; the detector keys on args, not output). Read-cache is removed from the code.
 4. Next step: fix the doom-loop detector (exempt stub-returning reads) and/or add targeted-test discipline, then re-run a full 300-run benchmark of the corrected set.

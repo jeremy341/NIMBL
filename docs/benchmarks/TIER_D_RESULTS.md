@@ -29,6 +29,7 @@ Verified: typecheck clean, 298 tests pass (only the pre-existing `stress.test.ts
 | Zeroed (doom-loop on identical reads) | 10/300 (3.3%) |
 | Hard API/rate-limit failures | **0** |
 | Avg tokens / usable run | 40,992 |
+| Avg billed tokens / usable run | approximately **15,804** (`noCacheTokens + outputTokens`) |
 | Avg tool steps / usable run | 17.9 |
 | Avg latency | **35 s** (was 62 s) |
 | Runtime | **28 min** (was 47 min) |

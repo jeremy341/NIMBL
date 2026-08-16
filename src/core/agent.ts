@@ -1,8 +1,9 @@
 import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import { stepCountIs, streamText, tool } from "ai"
+import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
-import { basename, dirname } from "node:path"
+import { basename, dirname, join, relative } from "node:path"
 import { z } from "zod"
 import { compatibilityIssues, getProvider, resolveModel, type ProviderModel } from "./providers"
 import { selectProjectContextWithBudget, type ProjectContextIndex } from "./context"
@@ -12,7 +13,7 @@ import type { PermissionSettings } from "./settings"
 import { permissionExplanation, permissionFor } from "./permissions"
 import { ASSISTANT_RESPONSE_STYLE, stripEmojis } from "./response-style"
 import { resolvePathAllowExternal, resolveProjectPath, resolveUnprotectedProjectPath, type ResolvedToolPath } from "./project-path"
-import { isTestCommand, normalizeTestCommand, runShellCommand, summarizeTestOutput } from "./shell"
+import { isReadLikeShellCommand, isTestCommand, normalizeTestCommand, runShellCommand, summarizeTestOutput } from "./shell"
 import { applyEdit } from "./edit-apply"
 import { fitRequestToBudget, type RequestBudgetBreakdown } from "./request-budget"
 import { countTextTokens } from "./tokenizers"
@@ -21,6 +22,7 @@ import { compressContext, type CompressionMode } from "./token-compression"
 import { classifyTask, type TaskFamily } from "./task-classifier"
 import { availableSkillGuidance, discoverSkills, loadSkill, selectRelevantSkills } from "./skills"
 import type { NimblSettings } from "./settings"
+import { buildRepositoryMap } from "./repo-map"
 
 export type AgentMode = "build" | "plan" | "explain" | "learn"
 export type ApprovalChoice = "once" | "always" | "reject" | { reject: string }
@@ -143,6 +145,7 @@ export interface AgentRunResult {
   callId?: string
   responseId?: string
   requestId?: string
+  providerRetries?: number
   /** Sprint C: family chosen by the task classifier (telemetry only). */
   family?: TaskFamily
   /** Effective per-run step budget used by stopWhen (classified, ceiling-clamped). */
@@ -153,6 +156,7 @@ export interface AgentRunResult {
 
 const MAX_FILE_BYTES = 48_000
 const MAX_SEARCH_FILES = 250
+const READ_PAGE_LINES = 120
 // Absolute safety ceiling for runaway loops (Sprint C: the per-class task
 // classifier picks the working budget; this is only the bound on that choice).
 const MAX_TOOL_STEPS = 100
@@ -196,9 +200,62 @@ function budgetPromptParts(text: string) {
 
 function toolID() { return Math.random().toString(36).slice(2, 10) }
 
+type TestCacheEntry = { code: number; output: string; relevantPaths?: string[]; fingerprint?: string }
+
+const TEST_FILE_TOKEN = /(?:^|[\s"'`])((?:\.\.?[\\/])?[^\s"'`|;&]+\.(?:test|spec)\.(?:ts|tsx|js|jsx|mjs|mts|cts))/gi
+const IMPORT_TOKEN = /(?:from\s*|import\s*\(|require\s*\()["'](\.[^"']+)["']/g
+const SOURCE_EXTENSIONS = ["", ".ts", ".tsx", ".js", ".jsx", ".json", "/index.ts", "/index.tsx", "/index.js", "/index.jsx"]
+
+function resolveLocalImport(root: string, importer: string, specifier: string): string | undefined {
+  const base = join(root, dirname(importer), specifier)
+  for (const suffix of SOURCE_EXTENSIONS) {
+    const candidate = base + suffix
+    if (existsSync(candidate)) return relative(root, candidate).replaceAll("\\", "/")
+  }
+  return undefined
+}
+
+function relevantTestPaths(root: string, command: string): string[] | undefined {
+  const initial = [...command.matchAll(TEST_FILE_TOKEN)].map((match) => match[1]!.replaceAll("\\", "/").replace(/^\.\//, ""))
+  if (!initial.length) return undefined
+  const queue = [...new Set(initial)]
+  const seen = new Set<string>()
+  while (queue.length) {
+    const path = queue.shift()!
+    if (seen.has(path)) continue
+    seen.add(path)
+    try {
+      const source = readFileSync(join(root, path), "utf8")
+      for (const match of source.matchAll(IMPORT_TOKEN)) {
+        const imported = resolveLocalImport(root, path, match[1]!)
+        if (imported && !seen.has(imported)) queue.push(imported)
+      }
+    } catch { return undefined }
+  }
+  return [...seen].sort()
+}
+
+function pathsFingerprint(root: string, paths: readonly string[]): string {
+  const hash = createHash("sha1")
+  for (const path of paths) {
+    try { hash.update(path).update("\0").update(readFileSync(join(root, path))).update("\0") } catch { hash.update(path).update("\0missing\0") }
+  }
+  return hash.digest("hex")
+}
+
+function scopedToolNames(mode: AgentMode, family: TaskFamily): readonly PermissionRequest["tool"][] {
+  const full = MODE_TOOLS[mode]
+  if (process.env.NIMBL_SCOPED_TOOLS !== "1" || mode !== "build") return full
+  // Safe rollout: narrow only unambiguous families. Bash remains available as
+  // the escape hatch, while long-horizon tasks retain the full catalog.
+  if (family === "retrieval") return ["read", "glob", "grep", "bash", "skill", "question"]
+  if (family === "test-writing") return full.filter((toolName) => !["webfetch", "websearch", "delegate"].includes(toolName))
+  return full
+}
+
 function shellDescription() {
   const body = "Run a bounded shell command in the current project. Shell filesystem changes are not included in NIMBL's file-edit undo history. " +
-    "When a test run fails and the output names a failing file, run that file directly (e.g. `bun test <file>`) to iterate on the fix; run the full suite only for the final verification. "
+    "When a test run fails and output names several files, verify the failing files together in one command after a batch of related edits; use the full suite only for final verification. Avoid running one test command per unchanged file. "
   if (process.platform === "win32") {
     return body +
       "Commands run in PowerShell (powershell.exe -NoProfile). Use PowerShell syntax: Get-ChildItem (or ls) and Get-Content (or cat) for listing/reading; avoid POSIX-only utilities like find, head, tail, or sed. Redirect stdout and stderr with 2>&1 or 2>&1 | Select-Object -First N; do not use 2>/dev/null (invalid in PowerShell). When running a command that emits non-zero exits on the project's test tool, allow it and inspect the output."
@@ -436,16 +493,27 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   let attemptActivity = false
   const repeatedToolCalls = new Map<string, number>()
   const allowedRepeatedCalls = new Set<string>()
-  // Read-to-edit budget state (hard gate): counts read-only tool calls since the
-  // last edit/write/apply_patch/bash. Once it reaches the budget the `read` tool
-  // refuses file content and returns a directive instead, forcing act-over-audit.
+  const softRepeatedCalls = new Map<string, number>()
+  const softRepeatNudge = (toolName: string, input: unknown) => {
+    const fingerprint = JSON.stringify([toolName, input])
+    const count = (softRepeatedCalls.get(fingerprint) || 0) + 1
+    softRepeatedCalls.set(fingerprint, count)
+    return count >= (options.doomLoopThreshold ?? 3)
+      ? `Repeated ${toolName} query detected (${count} times unchanged). Narrow the query or act on the existing results instead of repeating the same search.`
+      : undefined
+  }
+  // Read-to-edit budget state: counts read-only tool calls since the last
+  // edit/write/apply_patch or verification command. Read-like Bash commands are
+  // soft-counted by A2 and do not reset this state.
   let readsSinceEdit = 0
-  // Edits made since the last bash run, used only to phrase the gate message with
+  // Edits made since the last verification command, used only to phrase the gate message with
   // a verify nudge (A.4); the read gate itself does not require a test per edit.
   let pendingEdits = 0
+  const changedFiles = new Set<string>()
   const readGateBudget = options.readBudget ?? 8
   const enforceReadGate = options.mode === "build"
-  const testRunCache = new Map<string, { code: number; output: string }>()
+  const useHashedTestCache = process.env.NIMBL_TEST_CACHE_HASH === "1"
+  const testRunCache = new Map<string, TestCacheEntry>()
   // Repeated-read nudge: read is exempt from the doom-loop guard (S1), but to
   // avoid the TIER-F preflight's re-read blowup (lh-fix-all 200+ reads at 559k
   // tokens) the 3rd identical read returns a short directive instead of fresh
@@ -455,7 +523,14 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     for (const path of paths) {
       readCountByPath.delete(path)
     }
-    testRunCache.clear()
+    if (!useHashedTestCache) {
+      testRunCache.clear()
+      return
+    }
+    const changed = paths.map((path) => relative(options.root, path).replaceAll("\\", "/"))
+    for (const [key, entry] of testRunCache) {
+      if (!entry.relevantPaths || changed.some((path) => entry.relevantPaths!.includes(path))) testRunCache.delete(key)
+    }
   }
   const gateDirective = () => {
     const verifyNote = pendingEdits > 0 ? ` You have ${pendingEdits} unverified edit(s) since the last command run; run the relevant test (bash) to verify them before continuing to read.` : ""
@@ -507,8 +582,8 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   const tools = {
     read: tool({
       description: "Read a UTF-8 text file from the current project. Environment files are protected.",
-      inputSchema: z.object({ path: z.string().describe("Project-relative file path"), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }),
-      execute: async ({ path, startLine, endLine }) => {
+      inputSchema: z.object({ path: z.string().describe("Project-relative file path"), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional(), full: z.boolean().optional().describe("Return the full file instead of the default page") }),
+      execute: async ({ path, startLine, endLine, full }) => {
         const event = toolID(); emitTool({ id: event, tool: "read", state: "running", title: "Read " + path, path })
         try {
           // Hard read-to-edit gate: refuse content once the investigation budget
@@ -540,8 +615,14 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           const size = statSync(target.full).size
           if (size > MAX_FILE_BYTES * 8) return `Error: File is ${size} bytes, exceeding the read limit. Use bash to inspect it in parts.`
           const lines = readFileSync(target.full, "utf8").split("\n")
-          const text = lines.slice((startLine || 1) - 1, endLine || lines.length).map((line, index) => String((startLine || 1) + index).padStart(5) + "  " + line).join("\n")
-          const output = clip(text)
+          const firstLine = startLine || 1
+          const defaultEnd = !startLine && !endLine && !full ? Math.min(lines.length, READ_PAGE_LINES) : lines.length
+          const lastLine = endLine || defaultEnd
+          const text = lines.slice(firstLine - 1, lastLine).map((line, index) => String(firstLine + index).padStart(5) + "  " + line).join("\n")
+          const pageNote = !startLine && !endLine && !full && lines.length > lastLine
+            ? `\n\n... showing lines 1-${lastLine} of ${lines.length}; use startLine/endLine or full:true for more.`
+            : ""
+          const output = clip(text + pageNote)
           emitTool({ id: event, tool: "read", state: "completed", title: "Read " + target.rel, path: target.rel, output })
           return output
         } catch (error) { const message = error instanceof Error ? error.message : String(error); emitTool({ id: event, tool: "read", state: "failed", title: "Read " + path, detail: message }); return "Error: " + message }
@@ -554,6 +635,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         const event = toolID(); emitTool({ id: event, tool: "glob", state: "running", title: "Find " + pattern })
         try {
           await approve("glob", "Find " + pattern, "Search project file names.", undefined, pattern, event)
+          const nudge = softRepeatNudge("glob", { pattern })
+          if (nudge) {
+            emitTool({ id: event, tool: "glob", state: "completed", title: "Repeated search nudged", output: nudge })
+            return nudge
+          }
           readsSinceEdit++
           const files: string[] = []
           for await (const match of new Bun.Glob(pattern).scan({ cwd: options.root, onlyFiles: true })) {
@@ -575,6 +661,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         const event = toolID(); emitTool({ id: event, tool: "grep", state: "running", title: "Search " + query })
         try {
           await approve("grep", "Search " + query, "Search text in project files.", undefined, query, event)
+          const nudge = softRepeatNudge("grep", { query, pattern })
+          if (nudge) {
+            emitTool({ id: event, tool: "grep", state: "completed", title: "Repeated search nudged", output: nudge })
+            return nudge
+          }
           readsSinceEdit++
           const regex = new RegExp(query, "i")
           const matches: string[] = []
@@ -604,7 +695,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       },
     }),
     write: tool({
-      description: "Create or replace a project file. A diff is shown and the user must approve it.",
+      description: "Create a new project file or deliberately replace a whole file. For focused modifications prefer edit or apply_patch; a diff is shown and the user must approve it.",
       inputSchema: z.object({ path: z.string(), content: z.string() }),
       execute: async ({ path, content }) => {
         const event = toolID()
@@ -619,6 +710,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           mkdirSync(dirname(target.full), { recursive: true })
           writeFileSync(target.full, content, "utf8")
           readsSinceEdit = 0; pendingEdits++
+          changedFiles.add(target.rel)
           invalidateFileCaches([target.full])
           options.onFileChange?.({ path: target.rel, before, after: content, beforeExists, afterExists: true })
           emitTool({ id: event, tool: "write", state: "completed", title: "Wrote " + target.rel, path: target.rel, diff })
@@ -627,7 +719,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       },
     }),
     edit: tool({
-      description: "Replace text in a project file. A diff is shown and the user must approve it. Matches the requested text tolerantly when line endings, indentation, or whitespace differ.",
+      description: "Apply a focused text replacement to an existing project file. Prefer this over write for modifications; a compact diff is shown and the user must approve it. Matches requested text tolerantly when line endings, indentation, or whitespace differ.",
       inputSchema: z.object({ path: z.string(), oldText: z.string(), newText: z.string(), replaceAll: z.boolean().optional() }),
       execute: async ({ path, oldText, newText, replaceAll }) => {
         const event = toolID()
@@ -643,6 +735,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           await approve("edit", "Edit " + target.rel, "Apply this text replacement.", diff, target.rel, event)
           writeFileSync(target.full, after, "utf8")
           readsSinceEdit = 0; pendingEdits++
+          changedFiles.add(target.rel)
           invalidateFileCaches([target.full])
           options.onFileChange?.({ path: target.rel, before, after, beforeExists: true, afterExists: true })
           emitTool({ id: event, tool: "edit", state: "completed", title: "Edited " + target.rel, path: target.rel, diff })
@@ -651,7 +744,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       },
     }),
     apply_patch: tool({
-      description: "Apply a unified Git patch to project-relative files. The user sees the patch and must approve it.",
+      description: "Apply a focused unified Git patch to one or more project files. Prefer this for related multi-file edits; the user sees the patch and must approve it.",
       inputSchema: z.object({ patch: z.string().min(1) }),
       execute: async ({ patch }) => {
         const event = toolID()
@@ -673,6 +766,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           })
           if (options.onFileChanges) options.onFileChanges(changes)
           else for (const change of changes) options.onFileChange?.(change)
+          for (const change of changes) changedFiles.add(change.path)
           invalidateFileCaches(paths.map((path) => resolveUnprotectedProjectPath(options.root, path).full))
           readsSinceEdit = 0; pendingEdits++
           emitTool({ id: event, tool: "apply_patch", state: "completed", title: "Applied patch", detail: paths.join(", "), diff: clip(patch, 12_000) })
@@ -688,16 +782,24 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         try {
           await approve("bash", "Run command", command, undefined, command, event)
           const cacheKey = isTestCommand(command) ? normalizeTestCommand(command) : command
+          const relevantPaths = isTestCommand(command) && useHashedTestCache ? relevantTestPaths(options.root, command) : undefined
+          const fingerprint = relevantPaths ? pathsFingerprint(options.root, relevantPaths) : undefined
           let result = testRunCache.get(cacheKey)
+          if (result && useHashedTestCache && result.fingerprint !== fingerprint) result = undefined
           const cached = Boolean(result)
           if (!result) {
             result = await runShellCommand(command, options.root, { signal: options.abortSignal })
             if (isTestCommand(command)) {
               result = { ...result, output: summarizeTestOutput(command, result.output, result.code) }
-              testRunCache.set(cacheKey, result)
+              testRunCache.set(cacheKey, { ...result, relevantPaths, fingerprint })
             }
           }
-          readsSinceEdit = 0; pendingEdits = 0
+          // Safe A2 rollout: count obvious shell file-inspection commands as
+          // investigation, but do not block them yet. Tests and mutations keep
+          // their existing reset behavior; the next read tool can enforce the
+          // shared budget with a recoverable directive.
+          if (isReadLikeShellCommand(command)) readsSinceEdit++
+          else { readsSinceEdit = 0; pendingEdits = 0 }
           const state = result.code === 0 ? "completed" : "failed"
           const output = cached ? `[Cached test result; no files changed since the previous run]\n${result.output}` : result.output
           emitTool({ id: event, tool: "bash", state, title: (cached ? "Cached test result " : "Command exited ") + result.code, detail: command, output })
@@ -797,7 +899,16 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   }
 
   const modelDefinition = requestModel(options)
-  const availableTools = Object.fromEntries(Object.entries(tools).filter(([name]) => MODE_TOOLS[options.mode].includes(name as PermissionRequest["tool"])))
+  const classified = classifyTask(options.messages.at(-1)?.text || "", options.taskTags)
+  const availableNames = scopedToolNames(options.mode, classified.family)
+  const availableTools = Object.fromEntries(Object.entries(tools).filter(([name]) => availableNames.includes(name as PermissionRequest["tool"])))
+  const activeToolNamesForStep = (messages: unknown[]) => {
+    if (process.env.NIMBL_SCOPED_TOOLS !== "1" || options.mode !== "build") return undefined
+    const latestUser = [...messages as { role?: string; content?: unknown }[]].reverse().find((message) => message.role === "user")
+    const content = typeof latestUser?.content === "string" ? latestUser.content : options.messages.at(-1)?.text || ""
+    const family = classifyTask(content, options.taskTags).family
+    return scopedToolNames(options.mode, family).filter((name) => Object.hasOwn(availableTools, name))
+  }
   const issues = compatibilityIssues(modelDefinition, { tools: Object.keys(availableTools).length > 0, reasoning: false, imageInput: false, structuredOutput: false, streaming: true, minimumContextTokens: 1 })
   if (issues.length) throw new Error(`${modelDefinition.name} is incompatible with this request: ${issues.join(", ")}.`)
   const rawHistory = options.messages.slice(-30)
@@ -806,22 +917,23 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   // forcing 8, or the TaskRegistry's 100-step safety ceiling) is a hard bound on
   // the classified budget, never a raise: easy tasks keep tiny budgets, only the
   // long-horizon/shell-loop/multi-file families unlock more turns.
-  const classified = classifyTask(options.messages.at(-1)?.text || "", options.taskTags)
   const stepBudget = Math.min(classified.maxToolSteps, options.maxToolSteps ?? MAX_TOOL_STEPS)
   const selectedContext = await selectProjectContextWithBudget(options.root, options.messages.at(-1)?.text || "", options.retrievalLimit ?? classified.retrievalLimit, Math.min(modelDefinition.contextWindow * 4, 500_000), { index: options.contextIndex })
   const skillGuidance = availableSkillGuidance(selectRelevantSkills(
     discoverSkills(options.root, options.settings).filter((skill) => permissionFor(options.permissions, { tool: "skill", target: skill.name }) !== "deny"),
     options.messages.at(-1)?.text || "",
   ))
+  const repositoryMap = process.env.NIMBL_REPO_MAP === "1" ? await buildRepositoryMap(options.root) : ""
   const systemInstructions = [
     "You are NIMBL, a token-efficient coding companion. Work inside the current project using tools before making claims about its code.",
     ASSISTANT_RESPONSE_STYLE,
     modePrompt(options.mode),
     ...(classified.guidance ? [classified.guidance] : []),
-    "Use read, glob, grep, and project-local skills selectively. Keep tool output focused. Use todowrite for multi-step work. Use question only when a user decision is necessary. Use edit for focused changes, write for new or whole-file content, and apply_patch only for a valid unified diff.",
+    ...(repositoryMap ? [repositoryMap] : []),
+    "Use read, glob, grep, and project-local skills selectively. Keep tool output focused. Use todowrite for multi-step work. Use question only when a user decision is necessary. Use edit for focused changes, apply_patch for related multi-file hunks, and write only for new or deliberate whole-file content.",
     "After editing or changing code, verify the change by running the relevant test or check before finishing (e.g. bun test <file>); if the check is red, read the output and iterate. Do not loop on reads without acting: investigate just enough to edit, then edit and verify.",
     "When a task asks for a concrete value from the code (a constant, a numeric answer, a function name), read the relevant file and answer from its actual contents before replying; never answer with an unverified number or guess.",
-    "Current permission policy: " + ["read", "glob", "grep", "edit", "write", "bash", "webfetch", "websearch", "skill", "question", "delegate"].map((name) => `${name}=${permissionExplanation(options.permissions, { tool: name })}`).join(", "),
+    "Current permission policy: " + availableNames.map((name) => `${name}=${permissionExplanation(options.permissions, { tool: name })}`).join(", "),
     teachingPrompt(options.learning || { concepts: {} }),
     skillGuidance,
   ]
@@ -873,6 +985,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   // looping to maxAttempts and risking a context-overflow throw.
   const MAX_CONTINUATIONS = 3
   let continuations = 0
+  let providerRetries = 0
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     attemptActivity = false
     // Step-cap continuation replays the same user goal with accumulated tool
@@ -884,6 +997,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     // sequence, which must not count toward a doom-loop from the prior attempt.
     repeatedToolCalls.clear()
     allowedRepeatedCalls.clear()
+    softRepeatedCalls.clear()
     try {
       const stream = options.streamTextOverride ?? streamText
       const result = stream({
@@ -897,7 +1011,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         // limit or gateway error surfaces with a clear message instead of the
         // AI SDK's internal retry noise and a generic "No output generated".
         maxRetries: 0,
-        prepareStep: async ({ messages, instructions, steps }) => {
+        prepareStep: async ({ messages, instructions }) => {
           // Shared benchmark rate limiter: gates every model request (the SDK
           // invokes prepareStep once per tool step, before each internal call).
           if (options.beforeRequest) await options.beforeRequest()
@@ -910,7 +1024,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           // reads — "Token Reduction Is Not Cost Reduction", arXiv 2607.12161).
           if (messages.length > 24) {
             const pruned = pruneOldToolResults(messages)
-            if (pruned !== messages) return { messages: pruned as any }
+           if (pruned !== messages) return { messages: pruned as any, activeTools: activeToolNamesForStep(messages) as any }
           }
           const dynamicTokens = countTextTokens(JSON.stringify({ instructions, messages }), modelDefinition).tokens
           const projected = dynamicTokens + fitted.budget.toolSchemas + fitted.budget.outputReservation + fitted.budget.safetyMargin
@@ -921,20 +1035,20 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
             // throw if even the irreducible core cannot fit.
             const budgetChars = Math.max(1_000, Math.floor((modelDefinition.contextWindow - fitted.budget.toolSchemas - fitted.budget.outputReservation - fitted.budget.safetyMargin) * 3.5))
             const trimmed = trimMessagesToWindow(messages, budgetChars, (text) => countTextTokens(text, modelDefinition).tokens)
-            if (trimmed !== messages) return { messages: trimmed as any }
+             if (trimmed !== messages) return { messages: trimmed as any, activeTools: activeToolNamesForStep(messages) as any }
             throw new Error(`Tool-loop context reached ${projected} tokens, above ${modelDefinition.name}'s ${modelDefinition.contextWindow}-token window.`)
           }
           // Read-to-edit budget: if the agent has made many read-only tool calls
           // since the last edit without committing anything, inject a directive so
           // the next model turn acts instead of continuing to audit.
-          const readsSinceEdit = countReadsSinceEdit(steps.map((step) => step.toolCalls.map((call) => call.toolName)))
           if (readsSinceEdit >= (options.readBudget ?? 8)) {
             const prior = instructions ? (typeof instructions === "string" ? instructions : String(instructions)) : ""
             return {
-              instructions: [prior, `Investigation budget reached: ${readsSinceEdit} read-only tool calls since the last edit with no file change. Make the focused edit now and verify it, or stop investigating and answer directly. Do not issue further reads without acting.`].filter(Boolean).join("\n\n"),
+              instructions: [prior, gateDirective()].filter(Boolean).join("\n\n"),
+              activeTools: activeToolNamesForStep(messages) as any,
             }
           }
-          return {}
+          return { activeTools: activeToolNamesForStep(messages) as any }
         },
         stopWhen: stepCountIs(Math.max(1, stepBudget - executedToolSteps)),
         abortSignal: options.abortSignal,
@@ -960,7 +1074,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           const count = (repeatedToolCalls.get(fingerprint) || 0) + 1
           repeatedToolCalls.set(fingerprint, count)
           options.onTaskEvent?.({ type: "step", detail: `${toolName} step ${count}` })
-          if (toolName !== "bash" && toolName !== "read" && count >= (options.doomLoopThreshold ?? 3)) {
+          if (toolName !== "bash" && toolName !== "read" && toolName !== "grep" && toolName !== "glob" && count >= (options.doomLoopThreshold ?? 3)) {
             // Ask once per fingerprint; an approved fingerprint may continue.
             if (!allowedRepeatedCalls.has(fingerprint)) {
               options.onTaskEvent?.({ type: "doom-loop", detail: `Repeated ${toolName} call detected.` })
@@ -1005,7 +1119,8 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           if (Array.isArray(responseMessages)) continuedMessages = responseMessages
         } catch { /* responseMessages unavailable (e.g. synthetic override) — continue with history only */ }
         if (continuedMessages.length) history = [...history, ...continuedMessages] as typeof history
-        history = [...history, { role: "user", content: "You ran out of tool steps mid-task. Finish the remaining work now with as few additional tool calls as possible, then give your final answer." }]
+        const changed = [...changedFiles].slice(-12)
+        history = [...history, { role: "user", content: `You ran out of tool steps mid-task. Continue with as few additional tool calls as possible. Changed files: ${changed.length ? changed.join(", ") : "none recorded"}. Reuse the existing failure output, verify pending edits, and do not restart broad exploration; then give your final answer.` }]
         continue
       }
       // B.5 Leakage-aware learn mode: when teaching (learn mode), score whether
@@ -1036,6 +1151,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         callId: finalStep?.callId,
         responseId: finalStep?.response.id,
         requestId: finalStep?.response.headers?.["x-request-id"],
+        providerRetries,
         family: classified.family,
         maxToolSteps: stepBudget,
         budget: fitted.budget,
@@ -1043,12 +1159,14 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       }
     } catch (error) {
       if (attemptActivity || attempt === maxAttempts || options.abortSignal?.aborted || !retryable(error)) throw error
+      providerRetries++
       const message = error instanceof Error ? error.message : String(error)
       options.onRetry?.({ attempt: attempt + 1, message })
       const base = (options.retryDelayMs ?? 500) * 2 ** (attempt - 1)
       const honor = retryAfterMs(error)
       await wait(Math.min(honor ?? base, 30_000), options.abortSignal)
-    }  }
+    }
+  }
   throw new Error("Agent execution failed.")
 }
 

@@ -1,5 +1,7 @@
 # NIMBL vs opencode — Tier-B Head-to-Head (2026-08-15)
 
+> **Accounting correction:** this historical report compares old NIMBL full-sent totals with old opencode billed-only totals. The `46.8k vs 26-28k` token claim is not an apples-to-apples full-token comparison. Use `billedTokens` for economic comparisons and `totalTokens` for full-sent volume in new records.
+
 **Run:** run-6 (NIMBL, tag `1786808124244`) + run-7 (opencode-only, tag `1786811591640`)
 **Git:** `6c38ad0` · **Corpus:** `benchmarks/corpus/tier-b` · **Seed:** `20260728` · **Samples:** 3 per task/mode · **Concurrency:** 4
 **Endpoint:** `https://netic.hackclub.app/v1` (provider `netic`, key `india75`) · **Model:** `deepseek-v4-flash-free` (bare wire id)
@@ -17,7 +19,7 @@ Raw data lives in this folder:
 ## 1. Executive summary
 
 - **opencode solved all 75 tasks (100%)**; NIMBL solved 67–69/75 (89–92%) depending on mode.
-- **opencode used 2.5–2.8× more input tokens**: ~3.51M total vs ~2.25–2.31M, and **46.8k avg tokens per solved task vs 26.2–28.0k** (−40% to −44%).
+- **Legacy accounting:** opencode reported ~3.51M billed-only tokens and 46.8k billed-only tokens/run, while NIMBL reported ~2.25–2.31M full-sent tokens and 26.2–28.0k full-sent tokens/run. The old 2.5-2.8x statement is invalid without converting both bases.
 - **NIMBL was faster**: ~34–38s avg latency vs **~61s** for opencode (−38%).
 - **Cheaper per solved task** at reference pricing: NIMBL $0.258–$0.284 vs opencode ~$0.506 (solved-only, see note).
 - All three hard failures for NIMBL concentrate in long-horizon / shell-loop tasks (`lh-fix-all` 0/3, `sh-hidden-green` 1–2/3, `mf-quote-margin` 1–2/3). opencode solved every one of those but with 183–202k tokens each.
@@ -30,7 +32,8 @@ Raw data lives in this folder:
 | Metric | opencode | NIMBL none | NIMBL lexical | NIMBL hybrid | NIMBL prompt-cache |
 |---|---|---|---|---|---|
 | Solved | **75/75 (100%)** | 67/75 (89.3%) | 69/75 (92.0%) | 69/75 (92.0%) | 68/75 (90.7%) |
-| Total tokens | 3,513,287 | 2,299,506 | 2,305,380 | 2,299,679 | 2,252,497 |
+| Full tokens (legacy NIMBL basis) | 14,768,839 opencode* | 2,299,506 | 2,305,380 | 2,299,679 | 2,252,497 |
+| Billed-only tokens (legacy opencode basis) | 3,513,287 | see `noCacheTokens + outputTokens` | see `noCacheTokens + outputTokens` | see `noCacheTokens + outputTokens` | see `noCacheTokens + outputTokens` |
 | Cache read tokens | 11,255,552 | 1,380,480 | 1,563,648 | 1,483,520 | 1,527,040 |
 | Uncached (noCache) tokens | n/a | 807,549 | 640,961 | 705,738 | 635,812 |
 | Avg tokens / solved task | 46,844 | 26,208 | 27,964 | 26,794 | 26,176 |
@@ -41,10 +44,10 @@ Raw data lives in this folder:
 
 \* `lh-forced-context-rename`/`none` sample: "Repeating the same tool call is blocked by project policy" — a policy-deny loop, not a rate limit. 0 runs zeroed by rate limiting in any NIMBL mode.
 
-### Token efficiency vs opencode (avg tokens per solved task)
+### Historical token efficiency (not a valid cross-harness basis)
 | Mode | Avg / solved | vs opencode |
 |---|---|---|
-| opencode | 46,844 | — |
+| opencode | 46,844 billed-only | — |
 | none | 26,208 | **−44.1%** |
 | lexical | 27,964 | **−40.3%** |
 | hybrid | 26,794 | **−42.8%** |

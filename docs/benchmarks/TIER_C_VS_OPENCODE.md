@@ -1,5 +1,7 @@
 # Sprint C vs opencode - Tier-C Head-to-Head (2026-08-15)
 
+> **Accounting correction:** this historical comparison used opencode billed-only totals and NIMBL full-sent totals. Token deltas in its tables are preserved as historical measurements but are not valid economic comparisons. Future reports must show full-sent, uncached input, billed tokens, and provider cost separately.
+
 **NIMBL:** Sprint C live run, tag `1786827786898` (see `TIER_C_SPRINT_C_RESULTS.md` for the standalone analysis)
 **opencode:** run-7, tag `1786811591640` - the latest opencode benchmark in `.nimbl/benchmarks/2026-08-15-run6-FINAL-4mode-vs-opencode-1786808124244/`
 **Same corpus:** `benchmarks/corpus/tier-b` (25 tasks) - **Same model/endpoint:** `deepseek-v4-flash-free` @ `https://netic.hackclub.app/v1` - **Samples:** NIMBL 3 per task/mode (300 runs), opencode 3 per task (75 runs) - **Seed:** `20260728`

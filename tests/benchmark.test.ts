@@ -100,4 +100,13 @@ describe("benchmark persistence", () => {
     expect(metadata.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     expect(existsSync(join(process.cwd(), "package.json"))).toBe(true)
   })
+
+  it("attaches reproducibility metadata to every JSONL record", () => {
+    const dir = mkdtempSync(join(tmpdir(), "nimbl-benchmark-meta-"))
+    const file = join(dir, "results.jsonl")
+    const metadata = benchmarkMetadata({ seed: 42, provider: "test", model: "model" })
+    appendBenchmarkRecords(file, [{ taskId: "meta", mode: "lexical", seed: 42, selectedPaths: [], evaluation: { precisionAtK: 0, recallAtK: 0, mrr: 0, firstRelevantRank: null }, estimatedTokens: 0, excerptChars: 0, latencyMs: 0, telemetry: {} }], metadata)
+    expect(readBenchmarkRecords(file)[0]?.benchmarkMetadata).toEqual(metadata)
+    rmSync(dir, { recursive: true, force: true })
+  })
 })

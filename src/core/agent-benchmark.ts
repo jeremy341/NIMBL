@@ -76,14 +76,19 @@ export interface AgentBenchmarkRun {
   failedBefore: boolean
   inputTokens: number
   outputTokens: number
+  /** Full input plus output, including provider cache-read input. */
   totalTokens: number
+  /** Input tokens not served from the provider cache. */
   noCacheTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
+  /** Uncached input plus output; useful for billed-token comparisons. */
+  billedTokens: number
   referenceCostUsd: number
   providerCostUsd?: number
   latencyMs: number
   attempts: number
+  providerRetries?: number
   toolSteps: number
   finishReason?: string
   /** Sprint C: task family chosen by the classifier (telemetry only). */
@@ -97,12 +102,14 @@ export interface AgentBenchmarkRun {
   /** Optional task metadata joined into each run for stratified reporting. */
   difficulty?: AgentBenchmarkDifficulty
   tags?: string[]
+  benchmarkMetadata?: BenchmarkMetadata
 }
 
 export interface AgentBenchmarkSummary {
   taskId: string
   solved: boolean
   totalTokens: VarianceSummary
+  billedTokens: VarianceSummary
   inputTokens: VarianceSummary
   outputTokens: VarianceSummary
   cacheReadTokens: VarianceSummary
@@ -346,7 +353,7 @@ interface BenchmarkShared {
 }
 
 type FailedRun = { ok: false; message: string }
-type OkRun = { ok: true; text: string; usage: AgentRunResult["usage"]; attempts: number; latencyMs: number; finishReason?: string; family?: string; maxToolSteps?: number; budget: AgentRunResult["budget"]; retrieval: AgentRunResult["retrieval"] }
+type OkRun = { ok: true; text: string; usage: AgentRunResult["usage"]; attempts: number; providerRetries?: number; latencyMs: number; finishReason?: string; family?: string; maxToolSteps?: number; budget: AgentRunResult["budget"]; retrieval: AgentRunResult["retrieval"] }
 
 /** Run items through a bounded worker pool, preserving completion order only per-item. */
 async function runWithConcurrency<T>(items: readonly T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
@@ -590,10 +597,14 @@ async function runBenchmarkItem(shared: BenchmarkShared, item: BenchmarkWorkItem
   const subagentTokens = subagentRuns.reduce((sum, child) => sum + child.totalTokens, 0)
   const subagentInput = subagentRuns.reduce((sum, child) => sum + child.inputTokens, 0)
   const subagentOutput = subagentRuns.reduce((sum, child) => sum + child.outputTokens, 0)
-  const subagentCache = subagentRuns.reduce((sum, child) => sum + child.cacheReadTokens + child.cacheWriteTokens, 0)
   const toolHistogram: Record<string, number> = {}
   const toolEvents = events.filter((event) => event.kind === "tool")
-  for (const event of toolEvents) toolHistogram[event.tool] = (toolHistogram[event.tool] || 0) + 1
+  const terminalToolEvents = toolEvents.filter((event) => event.state !== "running")
+  for (const event of terminalToolEvents) toolHistogram[event.tool] = (toolHistogram[event.tool] || 0) + 1
+  const inputTokens = failed ? 0 : finalOutcome.usage.inputTokens + subagentInput
+  const outputTokens = failed ? 0 : finalOutcome.usage.outputTokens + subagentOutput
+  const cacheReadTokens = failed ? 0 : (finalOutcome.usage.cacheReadTokens || 0) + subagentRuns.reduce((sum, child) => sum + child.cacheReadTokens, 0)
+  const noCacheTokens = failed ? 0 : (finalOutcome.usage.noCacheTokens ?? Math.max(0, finalOutcome.usage.inputTokens - (finalOutcome.usage.cacheReadTokens || 0))) + subagentRuns.reduce((sum, child) => sum + Math.max(0, child.inputTokens - child.cacheReadTokens), 0)
   return {
     taskId: task.id,
     mode,
@@ -603,17 +614,19 @@ async function runBenchmarkItem(shared: BenchmarkShared, item: BenchmarkWorkItem
     totalChecks: grade.total,
     passedBefore: grade.passedBefore,
     failedBefore: grade.failedBefore,
-    inputTokens: failed ? 0 : finalOutcome.usage.inputTokens + subagentInput,
-    outputTokens: failed ? 0 : finalOutcome.usage.outputTokens + subagentOutput,
-    totalTokens: failed ? 0 : finalOutcome.usage.totalTokens + subagentTokens,
-    noCacheTokens: failed ? 0 : (finalOutcome.usage.noCacheTokens || 0) + Math.max(0, subagentInput - subagentCache + subagentOutput),
-    cacheReadTokens: failed ? 0 : (finalOutcome.usage.cacheReadTokens || 0) + subagentRuns.reduce((sum, child) => sum + child.cacheReadTokens, 0),
+    inputTokens,
+    outputTokens,
+    totalTokens: failed ? 0 : inputTokens + outputTokens,
+    noCacheTokens,
+    cacheReadTokens,
     cacheWriteTokens: failed ? 0 : (finalOutcome.usage.cacheWriteTokens || 0) + subagentRuns.reduce((sum, child) => sum + child.cacheWriteTokens, 0),
-    referenceCostUsd: failed ? 0 : estimateReferenceCost(finalOutcome.usage.inputTokens + subagentInput, finalOutcome.usage.outputTokens + subagentOutput),
+    billedTokens: noCacheTokens + outputTokens,
+    referenceCostUsd: failed ? 0 : estimateReferenceCost(inputTokens, outputTokens),
     providerCostUsd: providerCost,
     latencyMs: Date.now() - started,
     attempts: failed ? 0 : finalOutcome.attempts,
-    toolSteps: toolEvents.length,
+    providerRetries: failed ? 0 : finalOutcome.providerRetries,
+    toolSteps: new Set(terminalToolEvents.map((event) => event.id)).size,
     finishReason: failed ? undefined : finalOutcome.finishReason,
     family: failed ? undefined : finalOutcome.family,
     maxToolSteps: failed ? undefined : finalOutcome.maxToolSteps,
@@ -648,6 +661,7 @@ export function summarizeAgentBenchmarkRuns(runs: AgentBenchmarkRun[]): Record<s
       taskId,
       solved: taskRuns.every((run) => run.solved),
       totalTokens: varianceSummary(taskRuns.map((run) => run.totalTokens)),
+      billedTokens: varianceSummary(taskRuns.map((run) => run.billedTokens)),
       inputTokens: varianceSummary(taskRuns.map((run) => run.inputTokens)),
       outputTokens: varianceSummary(taskRuns.map((run) => run.outputTokens)),
       cacheReadTokens: varianceSummary(taskRuns.map((run) => run.cacheReadTokens)),
@@ -665,19 +679,20 @@ export function summarizeAgentBenchmarkRuns(runs: AgentBenchmarkRun[]): Record<s
  * baseline without regressing task quality?" Only lowers token usage when the
  * task still solves.
  */
-export function summarizeAgentBenchmarkModes(runs: AgentBenchmarkRun[]): Record<AgentBenchmarkMode, { solved: number; total: number; totalTokens: VarianceSummary; cacheReadTokens: VarianceSummary; referenceCostUsd: VarianceSummary; latencyMs: VarianceSummary; toolSteps: VarianceSummary; runs: number }> {
+export function summarizeAgentBenchmarkModes(runs: AgentBenchmarkRun[]): Record<AgentBenchmarkMode, { solved: number; total: number; totalTokens: VarianceSummary; billedTokens: VarianceSummary; cacheReadTokens: VarianceSummary; referenceCostUsd: VarianceSummary; latencyMs: VarianceSummary; toolSteps: VarianceSummary; runs: number }> {
   const byMode = new Map<AgentBenchmarkMode, AgentBenchmarkRun[]>()
   for (const run of runs) {
     const bucket = byMode.get(run.mode)
     if (bucket) bucket.push(run)
     else byMode.set(run.mode, [run])
   }
-  const summary = {} as Record<AgentBenchmarkMode, { solved: number; total: number; totalTokens: VarianceSummary; cacheReadTokens: VarianceSummary; referenceCostUsd: VarianceSummary; latencyMs: VarianceSummary; toolSteps: VarianceSummary; runs: number }>
+  const summary = {} as Record<AgentBenchmarkMode, { solved: number; total: number; totalTokens: VarianceSummary; billedTokens: VarianceSummary; cacheReadTokens: VarianceSummary; referenceCostUsd: VarianceSummary; latencyMs: VarianceSummary; toolSteps: VarianceSummary; runs: number }>
   for (const [mode, modeRuns] of byMode) {
     summary[mode] = {
       solved: modeRuns.filter((run) => run.solved).length,
       total: modeRuns.length,
       totalTokens: varianceSummary(modeRuns.map((run) => run.totalTokens)),
+      billedTokens: varianceSummary(modeRuns.map((run) => run.billedTokens)),
       cacheReadTokens: varianceSummary(modeRuns.map((run) => run.cacheReadTokens)),
       referenceCostUsd: varianceSummary(modeRuns.map((run) => run.referenceCostUsd)),
       latencyMs: varianceSummary(modeRuns.map((run) => run.latencyMs)),
@@ -693,6 +708,7 @@ export interface AgentBenchmarkFamilySummary {
   solved: number
   total: number
   totalTokens: VarianceSummary
+  billedTokens: VarianceSummary
   referenceCostUsd: VarianceSummary
   latencyMs: VarianceSummary
   toolSteps: VarianceSummary
@@ -721,6 +737,7 @@ export function summarizeAgentBenchmarkFamilies(runs: AgentBenchmarkRun[]): Reco
       solved: familyRuns.filter((run) => run.solved).length,
       total: familyRuns.length,
       totalTokens: varianceSummary(familyRuns.map((run) => run.totalTokens)),
+      billedTokens: varianceSummary(familyRuns.map((run) => run.billedTokens)),
       referenceCostUsd: varianceSummary(familyRuns.map((run) => run.referenceCostUsd)),
       latencyMs: varianceSummary(familyRuns.map((run) => run.latencyMs)),
       toolSteps: varianceSummary(familyRuns.map((run) => run.toolSteps)),

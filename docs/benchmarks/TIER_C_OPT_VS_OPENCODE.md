@@ -1,5 +1,7 @@
 # TIER-C Optimization Run vs opencode run-7 (OpenRouter - StreamLake - deepseek-v4-flash-0731)
 
+> **Accounting correction:** opencode's historical `totalTokens` excluded cache-read input while NIMBL's included it. The old `26% more token-efficient` headline is therefore not apples-to-apples. This file remains a historical run record; use corrected fields in future comparisons.
+
 Head-to-head between the **new NIMBL full run** (300 runs, optimized agent) and the **latest opencode run-7** (75 runs), same tier-b corpus, same model build.
 
 - **NIMBL:** `.nimbl/benchmarks/agent-benchmark-20260728-s3-live-1786870987145.jsonl` - live on **OpenRouter**, provider pinned **StreamLake**, model `deepseek/deepseek-v4-flash-0731`, concurrency **8**, rate limit **180 req/min** (raised - paid OpenRouter tier has no per-minute cap, verified with a 12-concurrent burst probe, 0 errors), context 200k.

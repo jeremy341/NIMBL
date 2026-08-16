@@ -21,7 +21,8 @@ process.stdout.write(`Starting ${live ? "LIVE" : "SYNTHETIC"} agent benchmark: t
 process.stdout.write(`Provider ${process.env.NIMBL_PROVIDER || "custom"} / model ${process.env.NIMBL_MODEL || process.env.NIMBL_CUSTOM_MODEL || "auto"}, modes: ${modes.join(", ")}\n`)
 const startedAt = Date.now()
 const runs = await runAgentBenchmark({ corpusRoot, seed, samples, live, modes, concurrency, requestsPerMinute, taskIds: taskIds.length ? taskIds : undefined })
-appendBenchmarkRecords(file, runs as unknown as AgentBenchmarkRun[])
+const persistedRuns = runs.map((run) => ({ ...run, benchmarkMetadata: meta }))
+appendBenchmarkRecords(file, persistedRuns as unknown as AgentBenchmarkRun[])
 const byTask = summarizeAgentBenchmarkRuns(runs)
 const byMode = summarizeAgentBenchmarkModes(runs)
 const byFamily = summarizeAgentBenchmarkFamilies(runs)
@@ -29,12 +30,12 @@ const byFamily = summarizeAgentBenchmarkFamilies(runs)
 process.stdout.write(`\n=== Per-mode (Sprint C) ===\n`)
 for (const mode of Object.keys(byMode).sort()) {
   const m = byMode[mode]!
-  process.stdout.write(`  ${mode}: solved=${m.solved}/${m.total} avgTokens=${Math.round(m.totalTokens.mean)} avgSteps=${Math.round(m.toolSteps.mean)} avgLatency=${Math.round(m.latencyMs.mean)}ms\n`)
+  process.stdout.write(`  ${mode}: solved=${m.solved}/${m.total} fullTokens=${Math.round(m.totalTokens.mean)} billedTokens=${Math.round(m.billedTokens.mean)} avgSteps=${Math.round(m.toolSteps.mean)} avgLatency=${Math.round(m.latencyMs.mean)}ms\n`)
 }
 process.stdout.write(`\n=== Per-family (Sprint C per-class budgets) ===\n`)
 for (const family of Object.keys(byFamily).sort()) {
   const f = byFamily[family]!
-  process.stdout.write(`  ${family}: solved=${f.solved}/${f.total} avgTokens=${Math.round(f.totalTokens.mean)} avgSteps=${Math.round(f.toolSteps.mean)} budget=${f.maxToolSteps} steps\n`)
+  process.stdout.write(`  ${family}: solved=${f.solved}/${f.total} fullTokens=${Math.round(f.totalTokens.mean)} billedTokens=${Math.round(f.billedTokens.mean)} avgSteps=${Math.round(f.toolSteps.mean)} budget=${f.maxToolSteps} steps\n`)
 }
 
 console.log(JSON.stringify({ meta, byTask, byMode, byFamily, elapsedMs: Date.now() - startedAt }, null, 2))

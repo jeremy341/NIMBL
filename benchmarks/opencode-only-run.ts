@@ -1,7 +1,7 @@
 import { join } from "node:path"
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { runOpencodeBenchmark } from "../src/core/opencode-benchmark"
-import { appendBenchmarkRecords } from "../src/core/benchmark"
+import { appendBenchmarkRecords, benchmarkMetadata } from "../src/core/benchmark"
 
 const corpusRoot = process.env.NIMBL_BENCH_CORPUS ? join(process.cwd(), process.env.NIMBL_BENCH_CORPUS) : join(import.meta.dir, "corpus")
 const resultsDir = join(process.cwd(), ".nimbl", "benchmarks")
@@ -21,6 +21,7 @@ const customProvider = baseURL && apiKey && providerId ? { providerId, baseURL, 
 if (!existsSync(resultsDir)) mkdirSync(resultsDir, { recursive: true })
 
 const runTag = `${Date.now()}`
+const meta = benchmarkMetadata({ seed, provider: process.env.OPENCODE_BENCH_PROVIDER || "opencode", model })
 const rawRoot = join(resultsDir, `raw-opencode-${runTag}`)
 mkdirSync(rawRoot, { recursive: true })
 
@@ -38,17 +39,18 @@ const runs = await runOpencodeBenchmark({
   concurrency,
 })
 
-appendBenchmarkRecords(join(resultsDir, `opencode-benchmark-${seed}-s${samples}-${runTag}.jsonl`), runs)
+const persistedRuns = runs.map((run) => ({ ...run, benchmarkMetadata: meta }))
+appendBenchmarkRecords(join(resultsDir, `opencode-benchmark-${seed}-s${samples}-${runTag}.jsonl`), persistedRuns)
 for (const run of runs) {
   const telemetry = (run.telemetry || {}) as Record<string, unknown>
   const rawEvents = Array.isArray(telemetry.rawEvents) ? telemetry.rawEvents : []
   const rawStreamName = `${run.taskId}-opencode-s${run.seed}.jsonl`
   writeFileSync(join(rawRoot, rawStreamName), rawEvents.join("\n") + "\n", "utf8")
-  writeFileSync(join(rawRoot, `${run.taskId}-opencode-s${run.seed}.json`), JSON.stringify({ ...run, telemetry: { ...telemetry, rawEvents } }, null, 2), "utf8")
+  writeFileSync(join(rawRoot, `${run.taskId}-opencode-s${run.seed}.json`), JSON.stringify({ ...run, benchmarkMetadata: meta, telemetry: { ...telemetry, rawEvents } }, null, 2), "utf8")
 }
 
 const solved = runs.filter((run) => run.solved).length
 const totalTokens = runs.reduce((sum, run) => sum + run.totalTokens, 0)
 const failed = runs.filter((run) => run.telemetry?.error).length
-console.log(`opencode: ${solved}/${runs.length} solved, ${totalTokens} total tokens, ${failed} with errors`)
+console.log(`opencode: ${solved}/${runs.length} solved, ${totalTokens} full tokens, ${failed} with errors`)
 console.log(`Raw results written to:\n  ${rawRoot}\n  opencode-benchmark-${seed}-s${samples}-${runTag}.jsonl`)
