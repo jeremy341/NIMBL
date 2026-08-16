@@ -101,9 +101,6 @@ export interface AgentRunOptions {
   /** Read-only tool calls allowed since the last edit before prepareStep injects a
    * "commit an edit now" directive. Universal guard against audit spirals. */
   readBudget?: number
-  /** Read-only tool calls allowed since the last edit before the read tool refuses
-   * content entirely (hard block). Defaults to 20 (warn at readBudget first). */
-  readHardBudget?: number
   runID?: string
   parentTaskID?: string
   onTaskEvent?: (event: { type: "step" | "budget" | "doom-loop"; detail: string }) => void
@@ -447,11 +444,17 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   // a verify nudge (A.4); the read gate itself does not require a test per edit.
   let pendingEdits = 0
   const readGateBudget = options.readBudget ?? 8
-  const readGateHard = options.readHardBudget ?? 20
   const enforceReadGate = options.mode === "build"
   const testRunCache = new Map<string, { code: number; output: string }>()
+  // Repeated-read nudge: read is exempt from the doom-loop guard (S1), but to
+  // avoid the TIER-F preflight's re-read blowup (lh-fix-all 200+ reads at 559k
+  // tokens) the 3rd identical read returns a short directive instead of fresh
+  // content. Never kills the run - deterministic, cheap, always recoverable.
+  const readCountByPath = new Map<string, number>()
   const invalidateFileCaches = (paths: readonly string[]) => {
-    void paths
+    for (const path of paths) {
+      readCountByPath.delete(path)
+    }
     testRunCache.clear()
   }
   const gateDirective = () => {
@@ -508,12 +511,13 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       execute: async ({ path, startLine, endLine }) => {
         const event = toolID(); emitTool({ id: event, tool: "read", state: "running", title: "Read " + path, path })
         try {
-          // Hard read-to-edit gate: refuse content only once the investigation
-          // budget is far exceeded without any edit (default 20 reads). The
-          // advisory directive fires earlier at readBudget (8) via prepareStep;
-          // this hard block is the last resort so localization is not starved
-          // the way opencode's 63-read lh-fix-all runs would be at a gate of 8.
-          if (enforceReadGate && readsSinceEdit >= readGateHard) {
+          // Hard read-to-edit gate: refuse content once the investigation budget
+          // is exhausted without any edit. The model cannot audit forever; it must
+          // edit (or answer) before more reads are allowed. Kept at readBudget (8)
+          // after TIER-F preflight: softening to 20 let lh-fix-all audit 200+
+          // files at 559k avg tokens with no solve gain. The solve-rate win came
+          // from the read doom-loop exemption (S1), not from softening this gate.
+          if (enforceReadGate && readsSinceEdit >= readGateBudget) {
             const directive = gateDirective()
             emitTool({ id: event, tool: "read", state: "completed", title: "Read blocked by investigation budget", path, output: directive })
             return directive
@@ -522,6 +526,17 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           await approveExternal(target, event)
           await approve("read", "Read " + target.rel, "Read this file.", undefined, target.rel, event)
           readsSinceEdit++
+          // Soft repeated-read nudge (3rd identical read): the model already has
+          // the content in history; a fresh dump just re-bills it. Directive is
+          // recoverable - the model can act, then re-read is allowed again after
+          // an edit resets the counter.
+          const readCount = (readCountByPath.get(target.full) || 0) + 1
+          readCountByPath.set(target.full, readCount)
+          if (readCount >= 3) {
+            const output = `File ${target.rel} was already read ${readCount} times unchanged. Use the earlier output; make a focused edit or verify with a test command instead of re-reading it.`
+            emitTool({ id: event, tool: "read", state: "completed", title: "Read repeated " + target.rel, path: target.rel, output })
+            return output
+          }
           const size = statSync(target.full).size
           if (size > MAX_FILE_BYTES * 8) return `Error: File is ${size} bytes, exceeding the read limit. Use bash to inspect it in parts.`
           const lines = readFileSync(target.full, "utf8").split("\n")

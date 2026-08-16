@@ -631,7 +631,7 @@ describe("agent execution", () => {
     expect(countReadsSinceEdit([])).toBe(0)
   })
 
-  it("warns but does not hard-block reads at the advisory budget (hard gate is higher)", async () => {
+  it("hard-blocks reads once the investigation budget is exhausted", async () => {
     const root = mkdtempSync(join(tmpdir(), "nimbl-agent-gate-"))
     writeFileSync(join(root, "note.txt"), "content")
     writeFileSync(join(root, "note2.txt"), "content2")
@@ -663,19 +663,18 @@ describe("agent execution", () => {
       permissions: { "*": "allow" },
       requestApproval: async () => "once",
       onEvent: () => {},
-      readBudget: 8,
-      readHardBudget: 20,
+      readBudget: 10,
     })
 
-    // All 14 reads return real content (the hard gate at 20 is never reached);
-    // the advisory directive at readBudget (8) is injected via prepareStep, not
-    // by the read tool, so it does not appear in read tool output.
-    expect(readOutput).not.toContain("Investigation budget reached")
-    expect(readOutput.match(/content2/g)).toHaveLength(7)
+    // Reads 1-2 of each file return content; reads 3+ return the repeated-read
+    // nudge; reads 11-14 are blocked by the investigation budget gate.
+    expect(readOutput.match(/Investigation budget reached/g)).toHaveLength(4)
+    expect(readOutput.match(/content2/g)).toHaveLength(2)
+    expect(readOutput.match(/was already read/g)).toHaveLength(6)
   })
 
-  it("hard-blocks reads only once the hard read budget is exceeded", async () => {
-    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-gate-hard-"))
+  it("nudges instead of re-dumping content on repeated identical reads", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nimbl-agent-reread-"))
     writeFileSync(join(root, "note.txt"), "content")
     let readOutput = ""
 
@@ -683,7 +682,7 @@ describe("agent execution", () => {
       fullStream: {
         async *[Symbol.asyncIterator]() {
           const outputs = []
-          for (let i = 0; i < 24; i++) {
+          for (let i = 0; i < 5; i++) {
             outputs.push(await config.tools.read.execute({ path: "note.txt" }))
           }
           readOutput = outputs.join("\n")
@@ -699,17 +698,15 @@ describe("agent execution", () => {
       model: "deepseek/deepseek-v4-pro",
       apiKey: "test-key",
       mode: "build",
-      messages: [{ role: "user", text: "read files" }],
+      messages: [{ role: "user", text: "read note" }],
       permissions: { "*": "allow" },
       requestApproval: async () => "once",
       onEvent: () => {},
-      readBudget: 8,
-      readHardBudget: 10,
     })
 
-    // Reads 1-10 return content; reads 11-24 are blocked with the directive.
-    expect(readOutput.match(/Investigation budget reached/g)).toHaveLength(14)
-    expect(readOutput.match(/content/g)).toHaveLength(10)
+    // Reads 1-2 return content; reads 3-5 return the repeated-read directive.
+    expect(readOutput.match(/was already read/g)).toHaveLength(3)
+    expect(readOutput.match(/content/g)).toHaveLength(2)
   })
 
   it("does not hard-block reads outside Build mode", async () => {
